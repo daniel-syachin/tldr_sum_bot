@@ -1,56 +1,144 @@
-# TL;DR Summarizer Bot
+# TL;DR Bot — Telegram Article Summarizer on AWS Lambda
 
-Telegram-бот на Claude (Anthropic), делающий критическую выжимку статьи по ссылке.
+![Deploy](https://github.com/daniel-syachin/tldr_sum_bot/actions/workflows/deploy.yml/badge.svg)
 
-## Архитектура (как есть в проде)
+A Telegram bot that turns any article link into a critical, fact-checked summary using
+Claude — running serverless on AWS Lambda, deployed automatically from GitHub via
+Terraform and OIDC (no long-lived AWS credentials anywhere).
 
+Send it a URL, get back the gist, the key claims, and a critical read of what's
+questionable or unsupported in the article — not just a friendly recap.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U([Telegram user]) -->|sends a link| TG[Telegram Cloud]
+    TG -->|webhook: POST /webhook| AGW[API Gateway<br/>HTTP API]
+    AGW --> L1[Lambda invocation #1<br/>webhook handler]
+    L1 -.->|200 OK, immediately| TG
+    L1 -->|async self-invoke| L2[Lambda invocation #2<br/>async processor]
+    L2 --> Jina[Jina Reader<br/>fetch article text]
+    L2 --> Claude[Claude API<br/>summarize + critique]
+    L2 -->|edit message| TG
+    TG -.-> U
+
+    L1 -. deps from .-> Layer[(Lambda Layer<br/>httpx, anthropic)]
+    L2 -. deps from .-> Layer
 ```
-Telegram → API Gateway (HTTP API, POST /webhook) → Lambda telegram-summarizer-bot
+
+**Why a webhook instead of polling?** Lambda runs one invocation per request and then
+exits — it can't run an infinite `getUpdates` polling loop. So Telegram is configured to
+push updates to an HTTPS endpoint (API Gateway → Lambda) instead.
+
+**Why does Lambda call itself?** Telegram expects a webhook response within a few
+seconds, or it assumes delivery failed and retries. Summarizing an article (fetch +
+Claude call) can take 30–40 seconds. So the first invocation acknowledges immediately
+(`200 OK`) and asynchronously invokes itself a second time to do the actual work without
+a deadline, editing the Telegram message once it's done.
+
+**Why a Lambda Layer?** `httpx` and `anthropic` aren't part of the Lambda runtime.
+Bundling them into every deploy's zip would mean shipping megabytes of unchanged
+third-party code on every push. Instead they're packaged once as a Lambda Layer, so each
+deploy only ships the few KB of actual bot code that changed.
+
+## CI/CD pipeline
+
+```mermaid
+flowchart LR
+    Dev([Developer]) -->|git push main| GH[GitHub]
+    GH --> GA[GitHub Actions]
+    GA -->|OIDC token| STS[AWS STS<br/>AssumeRoleWithWebIdentity]
+    STS --> Role[IAM Role<br/>github-actions-tgbot]
+    Role --> TF[terraform apply]
+    TF -->|update code + config| Lambda[(Lambda Function)]
 ```
 
-- Lambda сама себя асинхронно вызывает (`boto3` self-invoke), чтобы уложиться в таймаут
-  ответа Telegram на вебхук, а реальную обработку (fetch + Claude) делать без спешки.
-- Токены (`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`) заданы как переменные окружения
-  прямо в конфиге Lambda — руками через консоль. CI/CD их не читает и не трогает.
-- API Gateway и IAM-роль исполнения уже настроены и работают — Terraform ими не управляет
-  (сознательно, чтобы CI-роли не нужны были лишние права и не было риска что-то сломать).
-- Зависимости (`httpx`, `anthropic`) едут отдельным **Lambda Layer**
-  (`telegram-summarizer-bot-layer`), а не внутри zip функции — поэтому в
-  деплое из CI собирается zip из одного файла `lambda_function.py`, без pip install.
-  Список пакетов в layer — справочно в `requirements-lambda.txt`.
+- **No AWS keys in GitHub.** The workflow authenticates via OIDC — GitHub issues a
+  short-lived signed token, AWS exchanges it for temporary credentials scoped to one IAM
+  role. Nothing to leak, nothing to rotate.
+- **Terraform manages only what should change on every push**: the Lambda function's
+  code and config. API Gateway, the execution role, and the dependency Layer are
+  referenced read-only — they already worked, and giving the deploy pipeline broader
+  ownership (and broader IAM permissions) would add risk without adding value.
+- **Secrets stay where they are.** `TELEGRAM_BOT_TOKEN` and `ANTHROPIC_API_KEY` are set
+  directly as Lambda environment variables in the AWS console; Terraform is explicitly
+  told to ignore that field (`lifecycle.ignore_changes`), so a deploy never overwrites
+  them.
 
-## Структура
+## Repository layout
 
 ```
 src/
-  lambda_function.py  # прод-код — то, что реально крутится на Lambda
-  local_dev.py         # локальный запуск через getUpdates-polling для разработки
-infra/                 # Terraform: обновляет только код и конфиг самой Lambda
-.github/workflows/     # CI/CD: сборка zip + terraform apply при пуше в main
-requirements.txt        # полный набор для локальной разработки
-requirements-lambda.txt # только то, что реально едет в zip на Lambda
+  lambda_function.py   # the bot — this is what actually runs in production
+  local_dev.py          # local long-polling runner for development, reuses the same code
+infra/                  # Terraform: manages Lambda function code/config only
+.github/workflows/      # CI: build a zip, assume an AWS role via OIDC, terraform apply
+requirements.txt         # full dependency set for local development
+requirements-lambda.txt  # documents what's actually bundled in the Lambda Layer
+scripts/set_webhook.py   # one-off script to (re)register the Telegram webhook
 ```
 
-## Локальная разработка
+## Local development
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # вписать реальные токены
-python src/local_dev.py
+cp .env.example .env    # fill in TELEGRAM_BOT_TOKEN and ANTHROPIC_API_KEY
+cd src
+python local_dev.py     # runs via polling — production Lambda is untouched
 ```
 
-Правь `src/lambda_function.py` — это и есть боевой код, никакого дублирования логики.
+Edit `src/lambda_function.py` — same file, same functions, run locally or in Lambda.
 
-## Деплой (CI/CD)
+## Deploying a change
 
-`git push` в `main` → GitHub Actions:
-1. Ставит `requirements-lambda.txt` под платформу Lambda (`manylinux2014_x86_64`, Python 3.14).
-2. Кладёт `lambda_function.py` в собранный `build/`.
-3. Логинится в AWS по OIDC (без ключей) под ролью `github-actions-tgbot`.
-4. `terraform apply` — обновляет код и конфиг функции `telegram-summarizer-bot`.
+```bash
+git add src/lambda_function.py
+git commit -m "Describe what changed and why"
+git push
+```
 
-Один пуш — функция обновлена. Первым делом после клонирования репозитория на новой
-машине нужно один раз сделать `terraform import` (см. историю переписки/PR) — сама
-Lambda, API Gateway и роль уже существуют в AWS и не создаются заново.
+That's it. GitHub Actions builds the package, authenticates to AWS, and runs
+`terraform apply` — the Lambda function is updated within about a minute. Watch it run
+under the [Actions tab](https://github.com/daniel-syachin/tldr_sum_bot/actions).
+
+> Adding a *new* third-party import needs one extra step: dependencies live in a Lambda
+> Layer, not the deploy zip. See the rebuild command in `requirements-lambda.txt`.
+
+## What this project demonstrates
+
+Built as a hands-on project to move from "a script that works" to "a system with a
+deploy pipeline" — the kind of work an SRE role actually involves:
+
+- **Infrastructure as Code** — Terraform managing exactly the resources it should,
+  deliberately *not* taking over infrastructure that already worked, to keep blast
+  radius and required IAM permissions minimal.
+- **Keyless CI/CD** — OIDC federation between GitHub Actions and AWS IAM, including
+  debugging a real trust-policy mismatch (GitHub's immutable subject claims) rather than
+  just widening permissions until it worked.
+- **Least-privilege IAM** — scoping the CI role's policy down to the specific
+  resources and actions it needs, and fixing a policy that referenced a nonexistent
+  resource ARN.
+- **Observability and incident response** — using CloudWatch Logs to diagnose a
+  silent failure (a bot stuck mid-response) down to a root cause (an unchecked API
+  response), rather than guessing.
+- **Secret hygiene** — catching and fixing a credential leaking into logs via a
+  third-party library's default logging behavior, then rotating the exposed credential.
+- **Serverless architecture trade-offs** — webhook vs. polling, and an async
+  self-invoke pattern to work within a webhook's response-time budget.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for what's changed since this pipeline was set up, and
+keep adding to it as you make future changes.
+
+## Acknowledgments
+
+This project's CI/CD pipeline, Terraform setup, and production debugging were built
+collaboratively with [Claude](https://www.anthropic.com/claude) (Anthropic) acting as a
+pair-programming assistant and mentor: designing the pipeline, live-debugging real AWS
+and GitHub OIDC issues, and explaining the reasoning behind each decision along the way.
+Every change to AWS and GitHub configuration was reviewed and explicitly approved before
+being applied.
