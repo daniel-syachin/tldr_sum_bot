@@ -60,52 +60,50 @@ HTTP_CLIENT = httpx.Client(
 # The bot serves Russian-speaking users, so the prompt (and every user-facing
 # string in this file) is intentionally in Russian — that's a product choice,
 # not something to translate.
-SUMMARIZE_PROMPT = """
-Ты — критически мыслящий аналитик.
-Твоя задача — сделать краткую, но глубокую выжимку статьи с фокусом на критический анализ.
-Узнай актуальную дату и поищи самостоятельно информацию о теме статьи.
-Дата статьи может тебе казаться из будущего, это не так. Твои знания даты не актуальны.
+#
+# Prompt structure follows Anthropic long-context guidance: the article goes
+# FIRST (wrapped in <article> tags, prepended in summarize()), instructions
+# after. The model has a capped web_search tool (see summarize()) — the
+# instructions below tell it when to spend those searches (fact-checking,
+# not blanket research) and to cite what it found inline rather than
+# fabricating or dumping a separate link list.
+SUMMARIZE_PROMPT = """Выше — текст статьи, извлечённый автоматически.
 
-ФОРМАТ ОТВЕТА (используй HTML-теги для форматирования):
+Ты — критически мыслящий аналитик. Сделай краткую, но глубокую выжимку этой статьи с фокусом на критический анализ.
+
+КОНТЕКСТ И ОГРАНИЧЕНИЯ:
+- У тебя есть инструмент веб-поиска, но с жёстким лимитом на статью. Используй его точечно — чтобы проверить ключевое фактическое утверждение, устаревшую или спорную цифру, или уточнить актуальный контекст по теме. Не ищи по каждому пункту и не трать поиски на то, что и так очевидно из текста статьи.
+- Если для какого-то вывода в анализе ты опирался на результат поиска — кратко укажи источник прямо в тексте (например: «по данным Reuters» или домен сайта), не отдельным списком ссылок в конце.
+- Если поиск ничего не дал или лимит уже исчерпан — прямо скажи, что утверждение не удалось проверить, вместо того чтобы полагаться на свои (потенциально устаревшие) знания как на факт.
+- Дата статьи может быть позже даты твоих знаний — это нормально, полагайся на поиск, а не на собственные устаревшие представления о том, что «сейчас».
+- Если текст не похож на статью (страница ошибки, пейволл, навигация сайта, капча) — не анализируй его и не ищи по нему. Вместо выжимки коротко ответь: «Не удалось извлечь текст статьи» и одним предложением поясни, что пришло вместо неё.
+
+ФОРМАТ ОТВЕТА — начни сразу с первой секции, без вступлений вроде «Вот выжимка»:
 
 <b>📌 Суть</b>
 [2-3 предложения: о чём статья и главный тезис автора]
 
 <b>🔹 Ключевое</b>
-• [тезис 1]
-• [тезис 2]
-• [тезис 3]
-• [тезис 4]
-• [тезис 5]
-[максимум 10 пунктов, каждый — 1-2 предложение]
+• [тезис, 1-2 предложения]
+[3-7 пунктов — столько, сколько в статье реально значимых тезисов]
 
 <b>🔬 Критический анализ</b>
-[Этот раздел ОБЯЗАТЕЛЕН. Проанализируй:]
-• <b>Противоречия внутри статьи</b> — если автор сам себе противоречит
-• <b>Спорные утверждения</b> — что не подкреплено данными или источниками
-• <b>Научная обоснованность</b> — если claims не доказаны или основаны на слабых исследованиях, укажи это
+[Обязательная секция. Разбери ТОЛЬКО те пункты из списка ниже, которые реально применимы к статье, — не заполняй пункт ради галочки и не выдумывай проблему там, где её нет:]
+• <b>Противоречия внутри статьи</b> — автор противоречит сам себе
+• <b>Спорные утверждения</b> — не подкреплено данными или источниками
+• <b>Научная обоснованность</b> — утверждения не доказаны или опираются на слабые исследования
 • <b>Что упущено</b> — важный контекст, который автор игнорирует
-• <b>Конфликт интересов</b> — если автор может быть предвзят
+• <b>Конфликт интересов</b> — автор может быть предвзят (и видно почему)
+[Если статья выдерживает критику по всем пунктам — так и напиши в 1-2 предложениях, это тоже результат анализа]
 
 <b>⚠️ Красные флаги</b>
-[Если есть что-то из этого — укажи:]
-• Псевдонаука или недоказанные утверждения
-• Манипулятивная риторика
-• Отсутствие источников на ключевые claims
-• Корреляция выдаётся за причинность
-[Если красных флагов нет — пропусти этот раздел]
+[Только если они есть: псевдонаука, манипулятивная риторика, отсутствие источников на ключевые утверждения, корреляция выдаётся за причинность. Если флагов нет — полностью пропусти секцию, включая заголовок]
 
 ПРАВИЛА:
-- Всегда отвечай на русском языке, даже если статья на другом языке
-- Будь краток — вся выжимка должна уместиться в ~2000 символов
-- Используй HTML-теги: <b>жирный</b>, <i>курсив</i>, <code>код</code>
-- Не используй Markdown (звёздочки, подчёркивания)
-- Будь честен и критичен
-- Всегда отвечай на русском языке
-
-СТАТЬЯ:
-
-{article_text}"""
+- Отвечай только на русском языке, даже если статья на другом
+- Уложись примерно в 2000 символов
+- Форматирование — только HTML-теги, которые понимает Telegram: <b>жирный</b>, <i>курсив</i>, <code>код</code>. Никаких других тегов (<ul>, <li>, <p>, <h1> и т.п.) и никакого Markdown (звёздочки, решётки, подчёркивания)
+- Не используй символы < и > вне HTML-тегов"""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -142,24 +140,49 @@ def fetch_article(url: str) -> str:
 # SUMMARIZATION
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Server-side web search, capped at 3 queries per article — enough to
+# fact-check a couple of key claims without risking a runaway search bill.
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
+
+
 def summarize(text: str) -> str:
-    """Generate a summary via Claude."""
-    prompt = SUMMARIZE_PROMPT.format(article_text=text)
+    """Generate a summary via Claude, with capped web search for fact-checking."""
+    # Article first, instructions after (long-context best practice).
+    # Concatenation instead of str.format() — articles routinely contain
+    # literal { } (code snippets, JSON), which would crash .format().
+    prompt = f"<article>\n{text}\n</article>\n\n{SUMMARIZE_PROMPT}"
+    messages = [{"role": "user", "content": prompt}]
 
-    response = ANTHROPIC_CLIENT.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    # The server-side search loop can pause after 10 rounds mid-turn
+    # (stop_reason "pause_turn"); re-send the conversation to let it finish.
+    # max_uses=3 makes hitting that ceiling unlikely, but this keeps a
+    # paused turn from silently truncating the summary.
+    for _ in range(3):
+        response = ANTHROPIC_CLIENT.messages.create(
+            model="claude-sonnet-5",
+            # claude-sonnet-5 runs adaptive thinking by default, and thinking
+            # tokens count against max_tokens. 2000 was barely enough for the
+            # answer alone — thinking (plus search results in context) could
+            # eat the whole budget and truncate the reply.
+            max_tokens=8000,
+            tools=[WEB_SEARCH_TOOL],
+            messages=messages,
+        )
+        if response.stop_reason != "pause_turn":
+            break
+        messages = [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": response.content},
+        ]
 
-    # content[0] isn't always the answer — Claude Sonnet 5 can put a
-    # ThinkingBlock (its reasoning) ahead of the actual TextBlock, so pick
-    # the text block by type instead of assuming a fixed position.
-    for block in response.content:
-        if block.type == "text":
-            return block.text
-
-    raise Exception("Claude не вернул текстовый блок в ответе")
+    # With web search, a response is several blocks: thinking, server-side
+    # search calls/results, and one or more text segments interleaved
+    # between searches. Concatenate every text block in order rather than
+    # assuming the answer is a single block at a fixed position.
+    text_parts = [block.text for block in response.content if block.type == "text"]
+    if not text_parts:
+        raise Exception("Claude не вернул текстовый блок в ответе")
+    return "".join(text_parts)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

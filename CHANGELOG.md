@@ -7,6 +7,48 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-07-16 — Web search for fact-checking
+
+### Added
+- `summarize()` now gives Claude a server-side `web_search_20260209` tool,
+  capped at `max_uses: 3` per article — used to spot-check a claim or pull
+  current context, not to research the whole topic. Anthropic runs the
+  search and hands results back to the model directly; no new dependency.
+- Handles `stop_reason: "pause_turn"` (the server-side search loop's own
+  10-round ceiling) by re-sending the conversation so the summary doesn't
+  come back silently truncated.
+
+### Changed
+- `SUMMARIZE_PROMPT` no longer tells the model it has no internet access —
+  it now explains the search budget, when to spend it (fact-checking, not
+  blanket research), and to cite sources inline rather than as a separate
+  link list.
+- `summarize()` now concatenates every `text` content block instead of
+  returning the first one — with web search, Claude's answer can be split
+  across multiple text segments interleaved with search calls.
+
+## 2026-07-16 — Prompt rewrite for Claude Sonnet 5
+
+### Changed
+- `SUMMARIZE_PROMPT` rewritten around how `claude-sonnet-5` actually behaves
+  (very literal instruction following): removed the "research the topic
+  yourself" instruction (the API call has no web access — it only invited
+  fabricated facts), made the critical-analysis sub-points conditional
+  instead of mandatory (a forced "conflict of interest" bullet gets invented
+  when there isn't one), added a graceful path for non-article input (error
+  pages, paywalls), restricted formatting to the HTML subset Telegram
+  actually parses, and banned preamble. The article now goes *first* in the
+  prompt, wrapped in `<article>` tags, per Anthropic long-context guidance.
+
+### Fixed
+- `summarize()` crashed on any article containing literal `{` or `}` (code
+  snippets, JSON) because the article was injected via `str.format()`. Now
+  concatenated instead.
+- `max_tokens` raised 2000 → 8000: Sonnet 5 runs adaptive thinking by
+  default and thinking tokens count against `max_tokens`, so 2000 could be
+  consumed by reasoning alone, truncating the reply or returning no text
+  block at all.
+
 ## 2026-07-16 — Fix crash on Claude Sonnet 5 responses
 
 ### Fixed
