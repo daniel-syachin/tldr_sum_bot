@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Локальный запуск бота через long polling — для разработки без деплоя на Lambda.
+Local bot runner via long polling — for development without deploying to Lambda.
 
-Использует те же функции (fetch_article, summarize, process_message), что и
-продовый lambda_function.py — правишь логику один раз, она работает и тут, и там.
-Вместо Lambda self-invoke (async_process) сообщение обрабатывается сразу,
-в отдельном потоке, чтобы не блокировать цикл polling.
+Reuses the same functions (fetch_article, summarize, process_message) as the
+production lambda_function.py — fix the logic once, it works in both places.
+Instead of Lambda's self-invoke (async_process), messages are processed right
+away in a separate thread, so they don't block the polling loop.
 """
 
 import logging
@@ -35,7 +35,7 @@ def get_updates(offset: int) -> list:
 
 def main() -> None:
     offset = 0
-    logger.info("Локальный бот запущен (polling)")
+    logger.info("Local bot started (polling)")
 
     while True:
         for update in get_updates(offset):

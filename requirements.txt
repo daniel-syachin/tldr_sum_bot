@@ -1,4 +1,4 @@
-# Полный набор для локальной разработки (bot.py локально не используется — см. src/local_dev.py)
+# Full set for local development (bot.py is not used locally — see src/local_dev.py)
 -r requirements-lambda.txt
 boto3>=1.34.0
 python-dotenv>=1.0.0

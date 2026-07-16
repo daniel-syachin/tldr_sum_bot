@@ -1,10 +1,10 @@
 """
-Telegram-бот для суммаризации статей (Lambda с async обработкой)
+Telegram bot for article summarization (Lambda with async processing)
 
-Решение проблемы timeout loop:
-1. Webhook получает сообщение → сразу возвращает 200
-2. Lambda вызывает саму себя асинхронно для обработки
-3. Telegram не ретраит, потому что сразу получил 200
+Solving the webhook timeout/retry problem:
+1. Webhook receives the message → returns 200 immediately
+2. Lambda asynchronously invokes itself to do the actual processing
+3. Telegram doesn't retry, because it already got a 200
 """
 
 import json
@@ -16,26 +16,26 @@ import httpx
 import anthropic
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ИНИЦИАЛИЗАЦИЯ
+# SETUP
 # ═══════════════════════════════════════════════════════════════════════════
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# httpx на уровне INFO логирует полный URL запроса, а токен бота встроен
-# прямо в URL (api.telegram.org/bot<TOKEN>/...) — без этого он утекал
-# в открытом виде в CloudWatch Logs при каждом сообщении.
+# httpx logs the full request URL at INFO level, and the bot token is
+# embedded directly in that URL (api.telegram.org/bot<TOKEN>/...) — without
+# this, it was leaking in plaintext into CloudWatch Logs on every message.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# Lambda client для async self-invocation
+# Lambda client used for async self-invocation
 LAMBDA_CLIENT = boto3.client('lambda')
 
 HTTP_CLIENT = httpx.Client(
-    timeout=httpx.Timeout(90.0, connect=10.0),  # Увеличен timeout
+    timeout=httpx.Timeout(90.0, connect=10.0),  # generous timeout for slow article pages
     limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
     follow_redirects=True,
     headers={
@@ -46,9 +46,12 @@ HTTP_CLIENT = httpx.Client(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ПРОМПТ
+# PROMPT
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The bot serves Russian-speaking users, so the prompt (and every user-facing
+# string in this file) is intentionally in Russian — that's a product choice,
+# not something to translate.
 SUMMARIZE_PROMPT = """
 Ты — критически мыслящий аналитик.
 Твоя задача — сделать краткую, но глубокую выжимку статьи с фокусом на критический анализ.
@@ -98,11 +101,11 @@ SUMMARIZE_PROMPT = """
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ИЗВЛЕЧЕНИЕ ТЕКСТА
+# ARTICLE FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
 
 def fetch_article(url: str) -> str:
-    """Извлекает текст статьи через Jina Reader."""
+    """Fetch article text via Jina Reader."""
     jina_url = f"https://r.jina.ai/{url}"
 
     try:
@@ -128,11 +131,11 @@ def fetch_article(url: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# СУММАРИЗАЦИЯ
+# SUMMARIZATION
 # ═══════════════════════════════════════════════════════════════════════════
 
 def summarize(text: str) -> str:
-    """Создаёт выжимку через Claude Sonnet."""
+    """Generate a summary via Claude."""
     prompt = SUMMARIZE_PROMPT.format(article_text=text)
 
     response = ANTHROPIC_CLIENT.messages.create(
@@ -149,12 +152,12 @@ def summarize(text: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _strip_html(text: str) -> str:
-    """Грубо убирает HTML-теги — фолбэк, когда Telegram не смог распарсить разметку."""
+    """Crudely strip HTML tags — fallback for when Telegram can't parse the markup."""
     return re.sub(r"</?[a-zA-Z][^>]*>", "", text)
 
 
 def send_message(chat_id: int, text: str, parse_mode: str = None) -> dict:
-    """Отправляет сообщение в Telegram. При ошибке парсинга разметки повторяет без неё."""
+    """Send a Telegram message. Retries without markup if parsing fails."""
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -181,7 +184,7 @@ def send_message(chat_id: int, text: str, parse_mode: str = None) -> dict:
 
 
 def edit_message(chat_id: int, message_id: int, text: str, parse_mode: str = None) -> dict:
-    """Редактирует сообщение в Telegram. При ошибке парсинга разметки повторяет без неё."""
+    """Edit a Telegram message. Retries without markup if parsing fails."""
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -212,7 +215,7 @@ def edit_message(chat_id: int, message_id: int, text: str, parse_mode: str = Non
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# ОБРАБОТКА СООБЩЕНИЙ
+# MESSAGE HANDLING
 # ═══════════════════════════════════════════════════════════════════════════
 
 URL_PATTERN = re.compile(
@@ -240,20 +243,20 @@ WELCOME_MESSAGE = """👋 Привет! Я создаю критические �
 
 def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
     """
-    Обрабатывает сообщение (вызывается асинхронно).
+    Process a message (called asynchronously).
 
     Args:
-        chat_id: ID чата
-        text: текст сообщения (URL)
-        status_msg_id: ID сообщения со статусом (если уже отправлено)
+        chat_id: chat ID
+        text: message text (a URL)
+        status_msg_id: ID of the already-sent status message, if any
     """
 
-    # Команды
+    # Commands
     if text == "/start" or text == "/help":
         send_message(chat_id, WELCOME_MESSAGE, parse_mode="HTML")
         return
 
-    # Проверка URL
+    # Must be a URL
     if not URL_PATTERN.match(text):
         send_message(chat_id, "🔗 Отправь ссылку на статью для анализа")
         return
@@ -261,13 +264,13 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
     url = text
     logger.info(f"Processing: {url}")
 
-    # Отправляем статус если ещё не отправлен
+    # Send a status message if one hasn't been sent yet
     if not status_msg_id:
         status = send_message(chat_id, "📖 Загружаю...")
         status_msg_id = status.get("result", {}).get("message_id")
 
     try:
-        # Загрузка статьи
+        # Fetch the article
         article_text = fetch_article(url)
 
         if len(article_text.strip()) < 200:
@@ -276,14 +279,14 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
                     "❌ Не удалось извлечь текст. Сайт может блокировать автоматическое чтение.")
             return
 
-        # Обновляем статус
+        # Update status
         if status_msg_id:
             edit_message(chat_id, status_msg_id, "🔬 Анализирую...")
 
-        # Суммаризация
+        # Summarize
         summary = summarize(article_text)
 
-        # Отправка результата
+        # Send the result
         if len(summary) > 4000:
             if status_msg_id:
                 edit_message(chat_id, status_msg_id, summary[:4000], parse_mode="HTML")
@@ -310,24 +313,24 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
 
 def lambda_handler(event, context):
     """
-    Точка входа Lambda с async self-invocation.
+    Lambda entry point with async self-invocation.
 
-    Как это работает:
-    1. Telegram отправляет webhook → Lambda получает event
-    2. Lambda сразу возвращает 200 (Telegram доволен, не ретраит)
-    3. Lambda вызывает саму себя асинхронно с флагом async_process=True
-    4. Второй вызов делает реальную работу (без лимита времени от Telegram)
+    How it works:
+    1. Telegram sends a webhook → Lambda receives the event
+    2. Lambda immediately returns 200 (Telegram is happy, won't retry)
+    3. Lambda asynchronously invokes itself with async_process=True
+    4. The second invocation does the actual work (no deadline from Telegram)
     """
 
     # ─────────────────────────────────────────────────────────────────────
-    # Warming ping от EventBridge
+    # Warming ping from EventBridge
     # ─────────────────────────────────────────────────────────────────────
     if event.get("source") == "aws.events" or event.get("warming"):
         logger.info("Warming ping")
         return {"statusCode": 200, "body": "warm"}
 
     # ─────────────────────────────────────────────────────────────────────
-    # Асинхронная обработка (второй вызов)
+    # Async processing (second invocation)
     # ─────────────────────────────────────────────────────────────────────
     if event.get("async_process"):
         logger.info("Async processing started")
@@ -342,7 +345,7 @@ def lambda_handler(event, context):
         return {"statusCode": 200, "body": "processed"}
 
     # ─────────────────────────────────────────────────────────────────────
-    # Webhook от Telegram (первый вызов)
+    # Webhook from Telegram (first invocation)
     # ─────────────────────────────────────────────────────────────────────
     logger.info(f"Webhook received: {json.dumps(event)[:300]}")
 
@@ -358,26 +361,26 @@ def lambda_handler(event, context):
         if not chat_id or not text:
             return {"statusCode": 200, "body": "no message"}
 
-        # Быстрые команды — обрабатываем сразу
+        # Fast commands — handle immediately
         if text in ("/start", "/help"):
             send_message(chat_id, WELCOME_MESSAGE, parse_mode="HTML")
             return {"statusCode": 200, "body": "ok"}
 
-        # Проверка URL
+        # Must be a URL
         if not URL_PATTERN.match(text):
             send_message(chat_id, "🔗 Отправь ссылку на статью для анализа")
             return {"statusCode": 200, "body": "ok"}
 
-        # Отправляем статус сразу
+        # Send status right away
         status = send_message(chat_id, "📖 Загружаю...")
         status_msg_id = status.get("result", {}).get("message_id")
 
         # ─────────────────────────────────────────────────────────────────
-        # КЛЮЧЕВОЙ МОМЕНТ: Вызываем себя асинхронно
+        # THE KEY BIT: invoke ourselves asynchronously
         # ─────────────────────────────────────────────────────────────────
         LAMBDA_CLIENT.invoke(
             FunctionName=context.function_name,
-            InvocationType='Event',  # 'Event' = асинхронный вызов
+            InvocationType='Event',  # 'Event' = asynchronous invocation
             Payload=json.dumps({
                 "async_process": True,
                 "chat_id": chat_id,
@@ -388,7 +391,7 @@ def lambda_handler(event, context):
 
         logger.info(f"Async invocation triggered for: {text[:50]}")
 
-        # Возвращаем 200 СРАЗУ — Telegram не будет ретраить
+        # Return 200 RIGHT AWAY — Telegram won't retry
         return {"statusCode": 200, "body": json.dumps({"ok": True})}
 
     except Exception as e:

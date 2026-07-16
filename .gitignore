@@ -1,4 +1,4 @@
-# Секреты
+# Secrets
 .env
 *.pem
 
@@ -8,7 +8,7 @@ __pycache__/
 .venv/
 venv/
 
-# Сборка Lambda
+# Lambda build artifacts
 build/
 build.zip
 

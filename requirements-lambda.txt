@@ -1,12 +1,12 @@
-# СПРАВОЧНО: реальный список пакетов, упакованных в Lambda Layer
-# telegram-summarizer-bot-layer (не пересобирается автоматически из CI).
-# Меняешь зависимости — пересобирай layer вручную:
+# FOR REFERENCE: the actual package list bundled in the Lambda Layer
+# telegram-summarizer-bot-layer (not rebuilt automatically by CI).
+# Changing dependencies? Rebuild the layer by hand:
 #   pip install -r requirements-lambda.txt -t layer/python \
 #     --platform manylinux2014_x86_64 --implementation cp \
 #     --python-version 3.14 --only-binary=:all:
 #   cd layer && zip -r ../layer.zip python
 #   aws lambda publish-layer-version --layer-name telegram-summarizer-bot-layer \
 #     --zip-file fileb://../layer.zip --compatible-runtimes python3.14
-# и обнови infra/variables.tf: lambda_layer_arn (новая версия ARN).
+# then update infra/variables.tf: lambda_layer_arn (the new version's ARN).
 httpx>=0.27.0
 anthropic>=0.40.0

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Регистрация вебхука Telegram. Обычно НЕ нужен — вебхук уже настроен на
-https://wczogedzph.execute-api.eu-central-1.amazonaws.com/webhook
-и не меняется от деплоя к деплою (Terraform адрес API Gateway не трогает).
+Registers the Telegram webhook. Usually NOT needed — the webhook is already
+set to https://wczogedzph.execute-api.eu-central-1.amazonaws.com/webhook
+and doesn't change between deploys (Terraform doesn't touch the API Gateway URL).
 
-Используй только если пересоздаёшь API Gateway и адрес меняется:
+Only use this if you recreate API Gateway and the URL changes:
     python scripts/set_webhook.py <webhook_url>
 """
 
@@ -24,7 +24,7 @@ def main() -> None:
     webhook_url = sys.argv[1]
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise SystemExit("TELEGRAM_BOT_TOKEN не найден в .env")
+        raise SystemExit("TELEGRAM_BOT_TOKEN not found in .env")
 
     response = httpx.post(
         f"https://api.telegram.org/bot{token}/setWebhook",

@@ -1,13 +1,13 @@
-# Роль исполнения, API Gateway, вебхук — уже настроены руками и работают.
-# Terraform их не трогает и не импортирует: единственная задача этого стека —
-# управляемо (через CI) обновлять код и конфиг самой Lambda-функции.
+# The execution role, API Gateway and webhook are already set up by hand and
+# working. Terraform doesn't touch or import them: this stack's only job is
+# to manage the Lambda function's code/config via CI.
 data "aws_iam_role" "existing" {
   name = var.lambda_role_name
 }
 
-# Собирается GitHub Actions перед `terraform apply`: cp src/lambda_function.py build/
-# Зависимости (httpx, anthropic и т.д.) НЕ кладутся в этот zip — они уже едут
-# отдельным Lambda Layer (см. lambda_layer_arn ниже), собирать их заново не нужно.
+# Assembled by GitHub Actions before `terraform apply`: cp src/lambda_function.py build/
+# Dependencies (httpx, anthropic, etc.) are NOT in this zip — they already ship
+# in a separate Lambda Layer (see lambda_layer_arn below), no need to rebuild them.
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_dir  = "${path.module}/../build"
@@ -25,15 +25,15 @@ resource "aws_lambda_function" "bot" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  # Соответствует текущему состоянию в AWS — без этого блока Terraform на
-  # каждом plan пытается его снять (безобидно, но шумно в диффе).
+  # Matches the function's current state in AWS — without this block Terraform
+  # tries to remove it on every plan (harmless, but noisy in the diff).
   snap_start {
     apply_on = "PublishedVersions"
   }
 
   lifecycle {
-    # Переменные окружения (токены) заданы вручную в консоли AWS —
-    # Terraform не должен их читать/перезаписывать/стирать.
+    # Environment variables (tokens) are set by hand in the AWS console —
+    # Terraform must never read/overwrite/clear them.
     ignore_changes = [environment]
   }
 }
