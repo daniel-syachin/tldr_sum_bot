@@ -3,10 +3,15 @@ name: Deploy to AWS Lambda
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "infra/**"
+      - "requirements-lambda.txt"
+      - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
 permissions:
-  id-token: write   # нужно для OIDC-логина в AWS без долгоживущих ключей
+  id-token: write   # needed to log into AWS via OIDC, no long-lived keys
   contents: read
 
 jobs:
@@ -20,10 +25,10 @@ jobs:
         run: |
           mkdir -p build
           cp src/lambda_function.py build/
-        # Зависимости (httpx, anthropic) в zip не кладём — они уже едут отдельным
-        # Lambda Layer (telegram-summarizer-bot-layer), который Terraform не трогает.
-        # Если добавляешь новую зависимость — обнови requirements-lambda.txt
-        # и пересобери layer вручную (см. README).
+        # Dependencies (httpx, anthropic) are NOT bundled here — they already ship
+        # in a separate Lambda Layer (telegram-summarizer-bot-layer), which Terraform
+        # doesn't touch. Adding a new dependency? Update requirements-lambda.txt and
+        # rebuild the layer manually (see README).
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
