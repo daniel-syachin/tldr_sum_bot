@@ -7,6 +7,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-07-16 — Add MIT license
+
+### Added
+- `LICENSE` (MIT) — permissive license fitting a public portfolio project;
+  linked from the README.
+
 ## 2026-07-16 — Webhook authentication
 
 ### Added

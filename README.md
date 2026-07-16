@@ -1,6 +1,7 @@
 # TL;DR Bot — Telegram Article Summarizer on AWS Lambda
 
 ![Deploy](https://github.com/daniel-syachin/tldr_sum_bot/actions/workflows/deploy.yml/badge.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 A Telegram bot that turns any article link into a critical, fact-checked summary using
 Claude — running serverless on AWS Lambda, deployed automatically from GitHub via
@@ -144,6 +145,10 @@ deploy pipeline" — the kind of work an SRE role actually involves:
 
 See [CHANGELOG.md](CHANGELOG.md) for what's changed since this pipeline was set up, and
 keep adding to it as you make future changes.
+
+## License
+
+[MIT](LICENSE)
 
 ## Acknowledgments
 
