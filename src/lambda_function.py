@@ -152,7 +152,14 @@ def summarize(text: str) -> str:
         messages=[{"role": "user", "content": prompt}]
     )
 
-    return response.content[0].text
+    # content[0] isn't always the answer — Claude Sonnet 5 can put a
+    # ThinkingBlock (its reasoning) ahead of the actual TextBlock, so pick
+    # the text block by type instead of assuming a fixed position.
+    for block in response.content:
+        if block.type == "text":
+            return block.text
+
+    raise Exception("Claude не вернул текстовый блок в ответе")
 
 
 # ═══════════════════════════════════════════════════════════════════════════

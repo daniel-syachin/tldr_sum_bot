@@ -7,6 +7,15 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-07-16 — Fix crash on Claude Sonnet 5 responses
+
+### Fixed
+- **Every summary was failing** (`'ThinkingBlock' object has no attribute
+  'text'`) after the `claude-sonnet-5` model bump. `summarize()` assumed
+  `response.content[0]` was always the answer text, but Sonnet 5 can place a
+  `ThinkingBlock` (its reasoning) before the actual `TextBlock`. Now picks the
+  block by `type == "text"` instead of by fixed position.
+
 ## 2026-07-16 — Add MIT license
 
 ### Added
