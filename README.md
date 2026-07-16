@@ -140,6 +140,12 @@ deploy pipeline" — the kind of work an SRE role actually involves:
   check) instead of relying on the endpoint URL being hard to guess.
 - **Serverless architecture trade-offs** — webhook vs. polling, and an async
   self-invoke pattern to work within a webhook's response-time budget.
+- **Resilience to upstream API changes** — a model bump (`claude-sonnet-4-6` →
+  `claude-sonnet-5`) broke every request because the code assumed a fixed
+  response shape (`content[0]` is always the answer). Diagnosed from
+  CloudWatch, fixed by selecting the response block by type instead of
+  position — a small example of not trusting a dependency's output shape to
+  stay constant across versions.
 
 ## Changelog
 

@@ -144,6 +144,13 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
   webhook-secret mismatch once (Lambda had 65 chars, Telegram had 64). Prefer
   Python's `.strip()` (or `tr -d '\r\n'`) when handling secrets in shell
   pipelines here, and verify by comparing lengths, never by eyeballing output.
+- **`response.content[0]` is not always the answer.** The Anthropic SDK
+  response is a list of typed blocks — `claude-sonnet-5` can put a
+  `ThinkingBlock` (its reasoning) ahead of the `TextBlock`, and future models
+  could add other block types (citations, tool use, etc.). `summarize()`
+  picks the block by `block.type == "text"` rather than by position — follow
+  the same pattern for any new Anthropic API call, and don't assume a fixed
+  response shape survives a model bump.
 
 ## Secrets
 
@@ -184,3 +191,15 @@ gets rejected.
     --payload '{"headers": {"x-telegram-bot-api-secret-token": "<value>"}, "body": "{\"message\": {\"chat\": {\"id\": 1}, \"text\": \"/start\"}}"}' \
     response.json && cat response.json
   ```
+  Simpler alternative that skips the secret entirely: invoke with
+  `async_process` directly to exercise `process_message`/`fetch_article`/
+  `summarize` without going through the webhook-auth branch at all —
+  ```
+  aws lambda invoke --function-name telegram-summarizer-bot --region eu-central-1 \
+    --cli-binary-format raw-in-base64-out \
+    --payload '{"async_process": true, "chat_id": 1, "text": "<article url>"}' \
+    response.json && cat response.json
+  ```
+  then check CloudWatch for `OK: <url>` (success) vs. an `[ERROR]` line — the
+  Lambda's own HTTP response is always `{"statusCode": 200, "body": "processed"}`
+  either way, since `process_message` swallows its own exceptions.
