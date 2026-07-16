@@ -61,10 +61,13 @@ flowchart LR
   code and config. API Gateway, the execution role, and the dependency Layer are
   referenced read-only — they already worked, and giving the deploy pipeline broader
   ownership (and broader IAM permissions) would add risk without adding value.
-- **Secrets stay where they are.** `TELEGRAM_BOT_TOKEN` and `ANTHROPIC_API_KEY` are set
-  directly as Lambda environment variables in the AWS console; Terraform is explicitly
-  told to ignore that field (`lifecycle.ignore_changes`), so a deploy never overwrites
-  them.
+- **Secrets stay where they are.** Bot/API tokens are set directly as Lambda environment
+  variables; Terraform is explicitly told to ignore that field
+  (`lifecycle.ignore_changes`), so a deploy never overwrites them.
+- **The webhook itself is authenticated.** The API Gateway URL isn't secret, but the
+  Lambda rejects (`401`) any webhook request that doesn't carry a matching
+  `X-Telegram-Bot-Api-Secret-Token` header — so finding the URL alone isn't enough to
+  trigger the bot (and run up the Anthropic bill) on someone else's behalf.
 
 ## Repository layout
 
@@ -91,6 +94,12 @@ python local_dev.py     # runs via polling — production Lambda is untouched
 ```
 
 Edit `src/lambda_function.py` — same file, same functions, run locally or in Lambda.
+
+> **Use a separate bot for local dev.** `local_dev.py` polls via `getUpdates`,
+> but Telegram doesn't allow polling and a webhook on the same bot
+> simultaneously — pointing it at the production bot's token fails with a
+> `409 Conflict`. Create a second bot via `@BotFather` (free, instant) for
+> development.
 
 ## Deploying a change
 
@@ -126,6 +135,8 @@ deploy pipeline" — the kind of work an SRE role actually involves:
   response), rather than guessing.
 - **Secret hygiene** — catching and fixing a credential leaking into logs via a
   third-party library's default logging behavior, then rotating the exposed credential.
+- **Defense in depth** — authenticating the webhook itself (a shared-secret header
+  check) instead of relying on the endpoint URL being hard to guess.
 - **Serverless architecture trade-offs** — webhook vs. polling, and an async
   self-invoke pattern to work within a webhook's response-time budget.
 

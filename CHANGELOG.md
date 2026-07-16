@@ -7,6 +7,40 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-07-16 — Webhook authentication
+
+### Added
+- The webhook now verifies every request against a secret token
+  (`X-Telegram-Bot-Api-Secret-Token`), rejecting anything that doesn't match
+  with a `401`. The API Gateway URL was never a credential, but without this
+  check, anyone who found it could POST fake "messages" straight to the
+  Lambda and run up the Anthropic bill on someone else's behalf.
+- `scripts/set_webhook.py` now accepts an optional `secret_token` argument
+  for re-registering the webhook after rotating the secret.
+
+## 2026-07-16 — English docs and CLAUDE.md
+
+### Changed
+- Translated all code comments and docstrings to English across
+  `src/`, `infra/`, and `scripts/` (public repo, portfolio piece). The bot's
+  actual Russian-language content — the prompt, the welcome message, every
+  string sent to Telegram users — is untouched; that's a product decision,
+  not documentation.
+
+### Added
+- `CLAUDE.md`, so a fresh assistant session (or a new contributor) has the
+  real AWS resource IDs, the file map, the reasoning behind Terraform's
+  narrow scope, and the gotchas already solved, without rediscovering any of
+  it from scratch.
+
+## 2026-07-16 — CI trigger scope and model bump
+
+### Changed
+- The deploy workflow now only triggers on changes to `src/**`, `infra/**`,
+  `requirements-lambda.txt`, or itself — pushing README/CHANGELOG updates no
+  longer causes a no-op Lambda redeploy.
+- Summarization model bumped from `claude-sonnet-4-6` to `claude-sonnet-5`.
+
 ## 2026-07-16 — CI/CD pipeline and production hardening
 
 ### Added

@@ -134,6 +134,16 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
   the workflow file** (see `paths:` in `deploy.yml`). If a change to
   production behavior doesn't seem to deploy, check whether the changed path
   is actually covered by that filter.
+- **`local_dev.py` needs its own bot token.** Telegram refuses `getUpdates`
+  polling on a bot that already has a webhook registered (`409 Conflict`).
+  Local development must use a separate bot (see the note in `.env.example`)
+  — never point it at the production `TELEGRAM_BOT_TOKEN`.
+- **Windows Git Bash + `tr -d '\n'` leaves a stray `\r`.** Generating a secret
+  and piping it through `tr -d '\n'` on this platform strips the LF but not
+  the CR, silently adding one invisible extra character. This caused a real
+  webhook-secret mismatch once (Lambda had 65 chars, Telegram had 64). Prefer
+  Python's `.strip()` (or `tr -d '\r\n'`) when handling secrets in shell
+  pipelines here, and verify by comparing lengths, never by eyeballing output.
 
 ## Secrets
 
