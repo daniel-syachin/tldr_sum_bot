@@ -148,8 +148,13 @@ def summarize(text: str) -> str:
 # TELEGRAM API
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _strip_html(text: str) -> str:
+    """Грубо убирает HTML-теги — фолбэк, когда Telegram не смог распарсить разметку."""
+    return re.sub(r"</?[a-zA-Z][^>]*>", "", text)
+
+
 def send_message(chat_id: int, text: str, parse_mode: str = None) -> dict:
-    """Отправляет сообщение в Telegram."""
+    """Отправляет сообщение в Telegram. При ошибке парсинга разметки повторяет без неё."""
     payload = {"chat_id": chat_id, "text": text}
     if parse_mode:
         payload["parse_mode"] = parse_mode
@@ -160,14 +165,23 @@ def send_message(chat_id: int, text: str, parse_mode: str = None) -> dict:
             json=payload,
             timeout=15.0
         )
-        return response.json()
+        result = response.json()
+        if not result.get("ok"):
+            logger.error(f"Telegram sendMessage failed: {result}")
+            if parse_mode:
+                payload = {"chat_id": chat_id, "text": _strip_html(text)}
+                response = HTTP_CLIENT.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=15.0)
+                result = response.json()
+                if not result.get("ok"):
+                    logger.error(f"Telegram sendMessage retry (no parse_mode) also failed: {result}")
+        return result
     except Exception as e:
         logger.error(f"Telegram send error: {e}")
         return {"ok": False}
 
 
 def edit_message(chat_id: int, message_id: int, text: str, parse_mode: str = None) -> dict:
-    """Редактирует сообщение в Telegram."""
+    """Редактирует сообщение в Telegram. При ошибке парсинга разметки повторяет без неё."""
     payload = {
         "chat_id": chat_id,
         "message_id": message_id,
@@ -182,7 +196,16 @@ def edit_message(chat_id: int, message_id: int, text: str, parse_mode: str = Non
             json=payload,
             timeout=15.0
         )
-        return response.json()
+        result = response.json()
+        if not result.get("ok"):
+            logger.error(f"Telegram editMessageText failed: {result}")
+            if parse_mode:
+                payload = {"chat_id": chat_id, "message_id": message_id, "text": _strip_html(text)}
+                response = HTTP_CLIENT.post(f"{TELEGRAM_API}/editMessageText", json=payload, timeout=15.0)
+                result = response.json()
+                if not result.get("ok"):
+                    logger.error(f"Telegram editMessageText retry (no parse_mode) also failed: {result}")
+        return result
     except Exception as e:
         logger.error(f"Telegram edit error: {e}")
         return {"ok": False}
