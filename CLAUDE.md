@@ -137,13 +137,23 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
 
 ## Secrets
 
-`TELEGRAM_BOT_TOKEN` and `ANTHROPIC_API_KEY` live as plain environment
-variables on the Lambda function itself, set by hand in the AWS console —
-never in this repo, never in GitHub Secrets. `.env` is gitignored and only
-used for local development. If a token is ever exposed (logs, screenshots,
-chat transcripts), rotate it via BotFather (`/revoke`) or the Anthropic
-console, then update the Lambda environment variable — Terraform will not
-overwrite or interfere with that.
+`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, and `TELEGRAM_WEBHOOK_SECRET` live
+as plain environment variables on the Lambda function itself, set by hand
+(or via `aws lambda update-function-configuration`) — never in this repo,
+never in GitHub Secrets. `.env` is gitignored and only used for local
+development. If a token is ever exposed (logs, screenshots, chat
+transcripts), rotate it via BotFather (`/revoke`) or the Anthropic console,
+then update the Lambda environment variable — Terraform will not overwrite
+or interfere with that (`environment` is in `lifecycle.ignore_changes`).
+
+`TELEGRAM_WEBHOOK_SECRET` is checked against the
+`X-Telegram-Bot-Api-Secret-Token` header on every webhook call (see
+`lambda_handler` in `lambda_function.py`), so a request that isn't actually
+from Telegram gets a `401` instead of being processed. If this secret is ever
+rotated, the webhook must be re-registered with the new value:
+`python scripts/set_webhook.py <webhook_url> <new_secret>` — otherwise
+Telegram keeps sending the old (now-mismatched) header and every real message
+gets rejected.
 
 ## Debugging in production
 
@@ -154,10 +164,13 @@ overwrite or interfere with that.
   — an empty `"url"` means the webhook got cleared (e.g. after rotating the
   bot token) and needs re-registering with `scripts/set_webhook.py`.
 - Direct test invoke (safe — use a fake `chat_id`, it just fails at the
-  Telegram API level without affecting real users):
+  Telegram API level without affecting real users). Since the webhook secret
+  check landed, a payload without the matching header now correctly gets
+  `401` — include the header (read the real value from the Lambda console,
+  never print it in a shared terminal/log) to actually exercise the handler:
   ```
   aws lambda invoke --function-name telegram-summarizer-bot --region eu-central-1 \
     --cli-binary-format raw-in-base64-out \
-    --payload '{"body": "{\"message\": {\"chat\": {\"id\": 1}, \"text\": \"/start\"}}"}' \
+    --payload '{"headers": {"x-telegram-bot-api-secret-token": "<value>"}, "body": "{\"message\": {\"chat\": {\"id\": 1}, \"text\": \"/start\"}}"}' \
     response.json && cat response.json
   ```

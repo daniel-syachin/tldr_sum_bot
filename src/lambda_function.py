@@ -31,6 +31,14 @@ ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
+# Verifies that webhook requests actually came from Telegram (via the
+# X-Telegram-Bot-Api-Secret-Token header) and not from someone who just found
+# the public API Gateway URL. If unset, the check is skipped — see
+# lambda_handler below.
+TELEGRAM_WEBHOOK_SECRET = os.environ.get('TELEGRAM_WEBHOOK_SECRET', '')
+if not TELEGRAM_WEBHOOK_SECRET:
+    logger.warning("TELEGRAM_WEBHOOK_SECRET is not set — webhook requests are not authenticated")
+
 # Lambda client used for async self-invocation
 LAMBDA_CLIENT = boto3.client('lambda')
 
@@ -347,6 +355,12 @@ def lambda_handler(event, context):
     # ─────────────────────────────────────────────────────────────────────
     # Webhook from Telegram (first invocation)
     # ─────────────────────────────────────────────────────────────────────
+    if TELEGRAM_WEBHOOK_SECRET:
+        headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+        if headers.get("x-telegram-bot-api-secret-token") != TELEGRAM_WEBHOOK_SECRET:
+            logger.warning("Rejected webhook request with a missing/invalid secret token")
+            return {"statusCode": 401, "body": "unauthorized"}
+
     logger.info(f"Webhook received: {json.dumps(event)[:300]}")
 
     try:
