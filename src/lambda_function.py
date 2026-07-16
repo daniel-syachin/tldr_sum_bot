@@ -22,6 +22,11 @@ import anthropic
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# httpx на уровне INFO логирует полный URL запроса, а токен бота встроен
+# прямо в URL (api.telegram.org/bot<TOKEN>/...) — без этого он утекал
+# в открытом виде в CloudWatch Logs при каждом сообщении.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
