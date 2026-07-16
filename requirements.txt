@@ -1,4 +1,4 @@
-python-telegram-bot>=21.0
-anthropic>=0.40.0
-httpx>=0.27.0
+# Полный набор для локальной разработки (bot.py локально не используется — см. src/local_dev.py)
+-r requirements-lambda.txt
+boto3>=1.34.0
 python-dotenv>=1.0.0

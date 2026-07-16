@@ -1,0 +1,45 @@
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # нужно для OIDC-логина в AWS без долгоживущих ключей
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Lambda package
+        run: |
+          mkdir -p build
+          cp src/lambda_function.py build/
+        # Зависимости (httpx, anthropic) в zip не кладём — они уже едут отдельным
+        # Lambda Layer (telegram-summarizer-bot-layer), который Terraform не трогает.
+        # Если добавляешь новую зависимость — обнови requirements-lambda.txt
+        # и пересобери layer вручную (см. README).
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::456824039329:role/github-actions-tgbot
+          aws-region: eu-central-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform Init
+        working-directory: infra
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infra
+        run: terraform apply -auto-approve
