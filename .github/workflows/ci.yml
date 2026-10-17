@@ -1,0 +1,95 @@
+name: CI
+
+# Runs on every pull request, and is also called by deploy.yml before every
+# production apply — the same checks gate both, so main can't receive code
+# that a PR would have rejected.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14" # same as the Lambda runtime (infra/main.tf)
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest
+
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # only used by the optional plan step below
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.16.6"
+
+      - name: Format
+        run: terraform fmt -check -recursive
+
+      - name: Validate
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      # A real plan needs AWS credentials. It uses a separate read-only role
+      # (see "CI/CD" in CLAUDE.md), never the deploy role: a PR branch can
+      # edit this workflow, so whatever role it can assume must be harmless.
+      # Until the AWS_PLAN_ROLE_ARN repository variable exists, the plan is
+      # skipped rather than failing every PR.
+      - name: Build Lambda package
+        if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+        working-directory: .
+        run: |
+          mkdir -p build
+          cp src/lambda_function.py build/
+
+      - name: Configure AWS credentials (read-only)
+        if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: eu-central-1
+          allowed-account-ids: "456824039329"
+
+      - name: Plan
+        if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+        run: |
+          terraform init -input=false -reconfigure
+          # -lock=false: a plan only reads state, and skipping the lock keeps
+          # the plan role free of any S3 write permission.
+          terraform plan -input=false -lock=false -no-color -out=tfplan
+          {
+            echo '### Terraform plan'
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

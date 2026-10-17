@@ -7,6 +7,36 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — CI checks before every deploy, state locking, pinned actions
+
+### Added
+- **`ci.yml`: checks on every pull request** — `ruff`, the new offline
+  `pytest` suite (`tests/`, every external call mocked), and
+  `terraform fmt -check` / `validate`. Previously a push to `main` went
+  straight to `terraform apply -auto-approve` with nothing in between.
+- **`terraform plan` in the PR job summary**, via a *separate read-only*
+  role (`AWS_PLAN_ROLE_ARN` repository variable). A PR branch can edit the
+  workflow, so it must never be able to assume the deploy role. Skipped,
+  not failed, until that variable exists.
+- `.github/dependabot.yml` for monthly, grouped GitHub Actions bumps.
+
+### Changed
+- **`deploy.yml` runs the same checks first** (`workflow_call` into
+  `ci.yml`), so a direct push to `main` can't skip what a PR would catch.
+- **Deploys are serialized** with a `concurrency` group (queued, not
+  cancelled), and **the Terraform state is locked** with S3-native locking
+  (`use_lockfile = true`). Two quick pushes used to be able to run two
+  applies against the same unlocked state.
+- **Terraform 1.9.8 → 1.16.6** in CI (`required_version >= 1.11`, the
+  release where S3-native locking became GA).
+- **Every action is pinned to a commit SHA** (checkout v7.0.1, setup-python
+  v7.0.0, configure-aws-credentials v6.3.0, setup-terraform v4.0.1) instead
+  of a movable major tag — the deploy job runs with AWS credentials, so a
+  hijacked tag would run attacker code with them. The deploy also sets
+  `allowed-account-ids`, refusing credentials for any other account.
+- `.terraform.lock.hcl` gained the Linux `h1:` hashes for the existing
+  provider versions (it only had the hashes of the platform it was created on).
+
 ## 2026-10-17 — Robust summaries: stop reasons, long articles, links, errors
 
 ### Added

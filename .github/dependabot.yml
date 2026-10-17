@@ -1,0 +1,16 @@
+# Actions are pinned to commit SHAs (supply-chain hardening: a moved tag
+# can't swap the code that runs with AWS credentials). Pins don't update
+# themselves, so Dependabot proposes bumps as PRs, which go through CI.
+#
+# Python dependencies are deliberately not covered: the production ones live
+# in a hand-built Lambda Layer (see requirements-lambda.txt), and an
+# automatic bump of that file would not change what actually runs.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -9,13 +9,14 @@ Solving the webhook timeout/retry problem:
 
 import hmac
 import json
+import logging
 import os
 import re
 import time
-import logging
+
+import anthropic
 import boto3
 import httpx
-import anthropic
 
 # ═══════════════════════════════════════════════════════════════════════════
 # SETUP

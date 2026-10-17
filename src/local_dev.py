@@ -10,11 +10,12 @@ away in a separate thread, so they don't block the polling loop.
 
 import logging
 import threading
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from lambda_function import extract_url, process_message, TELEGRAM_API, HTTP_CLIENT  # noqa: E402
+from lambda_function import HTTP_CLIENT, TELEGRAM_API, extract_url, process_message  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

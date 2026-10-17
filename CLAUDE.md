@@ -41,8 +41,13 @@ infra/                   # Terraform — manages ONLY the Lambda function resour
   variables.tf            # function name, execution role name, layer ARN
   main.tf                 # the actual aws_lambda_function resource + data sources
   outputs.tf               # ARN / last_modified outputs
-.github/workflows/deploy.yml  # CI: build zip, OIDC login, terraform apply
+.github/workflows/ci.yml      # PR checks: ruff, pytest, terraform fmt/validate (+ plan if a plan role exists)
+.github/workflows/deploy.yml  # on push to main: runs ci.yml, then OIDC login + terraform apply
+.github/dependabot.yml        # monthly PRs bumping the SHA-pinned actions
+tests/                    # pytest unit tests, every external call mocked (conftest.py sets env vars)
+pyproject.toml            # ruff + pytest config only (not a package)
 requirements.txt          # full deps for local dev (includes boto3, python-dotenv)
+requirements-dev.txt      # requirements.txt + pinned pytest/ruff (what CI installs)
 requirements-lambda.txt   # what's actually bundled in the Lambda Layer (httpx, anthropic only)
 scripts/set_webhook.py    # one-off: re-register the Telegram webhook if the API Gateway URL ever changes
 .env.example              # local dev env var template (TELEGRAM_BOT_TOKEN, ANTHROPIC_API_KEY)
@@ -64,19 +69,27 @@ scripts/set_webhook.py    # one-off: re-register the Telegram webhook if the API
 ## How to make a change
 
 1. Edit `src/lambda_function.py` (or `infra/*.tf` for infrastructure changes).
-2. Optional: test locally first —
+2. Run the same checks CI runs (required — CI blocks the deploy otherwise):
    ```
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
+   ruff check . && pytest
+   ```
+   New behavior gets a test in `tests/` — mock every external call (Telegram,
+   Jina, Claude, Lambda), the suite must stay offline and free.
+   Optional: try it against a real (dev) bot —
+   ```
    cp .env.example .env   # fill in real tokens
    cd src && python local_dev.py
    ```
    This runs via polling on the developer's machine; production Lambda is
    untouched.
-3. Commit and push to `main`.
-4. GitHub Actions deploys automatically — **but only if the push touches**
-   `src/**`, `infra/**`, `requirements-lambda.txt`, or the workflow file
-   itself (see the `paths:` filter in `deploy.yml`). Pushing only
-   README/CHANGELOG changes will *not* trigger a deploy.
+3. Open a pull request: `ci.yml` runs the checks (and a `terraform plan`
+   in the job summary, once the plan role exists — see "CI/CD" below).
+4. Merging to `main` deploys automatically: `deploy.yml` re-runs the same
+   checks via `workflow_call`, then applies — **but only if the push touches**
+   `src/**`, `infra/**`, `requirements-lambda.txt`, or either workflow file
+   (see the `paths:` filter in `deploy.yml`). Pushing only
+   README/CHANGELOG/tests changes will *not* trigger a deploy.
 5. Verify: check the [Actions tab](https://github.com/daniel-syachin/tldr_sum_bot/actions),
    then confirm in AWS if needed:
    ```
@@ -88,6 +101,40 @@ scripts/set_webhook.py    # one-off: re-register the Telegram webhook if the API
    change). Add a new dated section above the previous one, following the
    existing `### Added` / `### Changed` / `### Fixed` structure. Skip it only
    for trivial things (typo fixes, comment tweaks).
+
+## CI/CD
+
+- **Actions are pinned to commit SHAs** with the version in a comment
+  (`uses: actions/checkout@<sha> # v7.0.1`). Don't replace a pin with a tag;
+  bump through Dependabot's PRs or resolve the new SHA with
+  `git ls-remote https://github.com/<owner>/<action> refs/tags/<tag>`.
+- **Deploys are serialized** (`concurrency: deploy-production`, not
+  cancelled) and **state is locked** with S3-native locking
+  (`use_lockfile = true`, Terraform >= 1.11). The lock is an object next to
+  the state: `tg-bot/terraform.tfstate.tflock`. The deploy role
+  (`github-actions-tgbot`) needs `s3:GetObject`, `s3:PutObject` and
+  `s3:DeleteObject` on that key — if its policy only lists the state key
+  itself, `terraform init/apply` fails with a lock error. A crashed run can
+  leave a stale lock; `terraform force-unlock <lock-id>` (the ID is in the
+  error) clears it — only once you're sure no apply is running.
+- **`terraform plan` on PRs uses a separate read-only role**, never the
+  deploy role: a PR branch can edit the workflow, so any role it can assume
+  must be harmless. The plan step runs only when the repository variable
+  `AWS_PLAN_ROLE_ARN` is set (Settings → Secrets and variables → Actions →
+  Variables). To create the role:
+  - Trust: the same GitHub OIDC provider as `github-actions-tgbot`, with the
+    `sub` condition copied from that role's trust policy but ending in
+    `:pull_request` instead of `:*` (keep whichever subject format — classic
+    or immutable — the deploy role uses; see the OIDC gotcha below).
+  - Permissions: AWS managed `AWSLambda_ReadOnlyAccess`, plus an inline
+    policy with `s3:ListBucket` on the state bucket, `s3:GetObject` on
+    `tg-bot/terraform.tfstate`, and `iam:GetRole` on the execution role.
+    The plan runs with `-lock=false`, so no S3 write is needed. If a plan
+    fails with `AccessDenied`, the error names the missing action — add
+    exactly that, nothing broader.
+- **Branch protection on `main`** (requiring the `CI` checks) is what makes
+  the PR flow binding; without it, a direct push still runs the checks (the
+  deploy job `needs` them) but nothing forces a PR.
 
 ## Adding a new dependency
 
