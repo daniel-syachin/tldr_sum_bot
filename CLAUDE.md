@@ -194,7 +194,7 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
   Python's `.strip()` (or `tr -d '\r\n'`) when handling secrets in shell
   pipelines here, and verify by comparing lengths, never by eyeballing output.
 - **`response.content[0]` is not always the answer.** The Anthropic SDK
-  response is a list of typed blocks — `claude-sonnet-5` can put a
+  response is a list of typed blocks — `claude-sonnet-5` and `claude-sonnet-5-5` can put a
   `ThinkingBlock` (its reasoning) ahead of the `TextBlock`, and future models
   could add other block types (citations, tool use, etc.). `summarize()`
   picks the block by `block.type == "text"` rather than by position — follow
@@ -213,10 +213,10 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
 
 ## Configuration (non-secret env vars)
 
-`CLAUDE_MODEL` (optional, default `claude-sonnet-5`) selects the model
+`CLAUDE_MODEL` (optional, default `claude-sonnet-5-5`) selects the model
 `summarize()` uses. It lives on the Lambda environment like the secrets
 below, so switching or rolling back a model is a console edit, not a deploy.
-The prompt was tuned against `claude-sonnet-5`; before moving to a newer
+The TLDR prompt was written for `claude-sonnet-5-5`; before moving to a newer
 model permanently, compare a handful of real summaries side by side, and
 check that model's migration notes (thinking/effort parameters change
 between generations).
