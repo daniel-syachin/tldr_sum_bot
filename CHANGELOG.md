@@ -7,6 +7,20 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — Bot is now a short TLDR tool, default model Sonnet 5.5
+
+### Changed
+- **Prompt rewritten from "critical analysis" to a short TLDR** (~1000
+  characters): what the article is about, the main points, concrete
+  insights/techniques/practices to take away, and a warning section that
+  appears *only* when there are real red flags (the section and its header
+  are omitted otherwise). The old always-on critical-analysis section is gone.
+- `WELCOME_MESSAGE` describes the new behaviour.
+- **Web search capped at 1 per article** (was 3), and the prompt reserves it
+  for verifying a suspected red flag. Cheaper, and matches the new purpose.
+- **Default model `claude-sonnet-5` → `claude-sonnet-5-5`.** Still
+  overridable via `CLAUDE_MODEL` without a deploy.
+
 ## 2026-10-17 — Pin layer dependencies to what production runs, drop unused SnapStart
 
 ### Changed
