@@ -151,6 +151,26 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
   picks the block by `block.type == "text"` rather than by position — follow
   the same pattern for any new Anthropic API call, and don't assume a fixed
   response shape survives a model bump.
+- **Only `UserFacingError` messages reach the user.** `process_message`
+  shows the text of a `UserFacingError` (Russian, written for end users) and
+  replaces any other exception with a generic message, logging the full
+  traceback. When adding a failure the user should understand, raise
+  `UserFacingError("…")`; a plain `Exception("…")` will show up as
+  "Что-то пошло не так".
+- **Telegram entity offsets are UTF-16 code units, not Python characters.**
+  An emoji before a link shifts a naive `text[offset:offset+length]` slice.
+  `extract_url()` re-encodes to UTF-16 before slicing — do the same for any
+  other entity-based parsing.
+
+## Configuration (non-secret env vars)
+
+`CLAUDE_MODEL` (optional, default `claude-sonnet-5`) selects the model
+`summarize()` uses. It lives on the Lambda environment like the secrets
+below, so switching or rolling back a model is a console edit, not a deploy.
+The prompt was tuned against `claude-sonnet-5`; before moving to a newer
+model permanently, compare a handful of real summaries side by side, and
+check that model's migration notes (thinking/effort parameters change
+between generations).
 
 ## Secrets
 

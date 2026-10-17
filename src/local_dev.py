@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from lambda_function import process_message, TELEGRAM_API, HTTP_CLIENT  # noqa: E402
+from lambda_function import extract_url, process_message, TELEGRAM_API, HTTP_CLIENT  # noqa: E402
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -43,7 +43,8 @@ def main() -> None:
 
             message = update.get("message", {})
             chat_id = message.get("chat", {}).get("id")
-            text = (message.get("text") or "").strip()
+            # Same link extraction as the webhook path in lambda_function.py
+            text = extract_url(message) or (message.get("text") or "").strip()
 
             if chat_id and text:
                 threading.Thread(

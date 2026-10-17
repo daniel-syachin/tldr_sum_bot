@@ -7,6 +7,46 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — Robust summaries: stop reasons, long articles, links, errors
+
+### Added
+- **Links are found anywhere in a message.** The bot used to require the
+  whole message to be a bare URL, so "глянь https://…", a link hidden behind
+  text, or a forwarded post (text in `caption`) were all rejected. It now
+  reads Telegram's own `url` / `text_link` entities (offsets are UTF-16, so
+  the text is re-encoded before slicing), including scheme-less links.
+- **`CLAUDE_MODEL` env var** (default `claude-sonnet-5`), so a newer model
+  can be tried on real articles from the Lambda console without a deploy —
+  and rolled back the same way. The prompt was tuned for `claude-sonnet-5`,
+  so a model switch deserves a side-by-side comparison, not a blind bump.
+
+### Changed
+- **Long articles are capped at 150k characters** before going to Claude, so
+  a runaway page (docs site, giant comment thread) can't silently cost many
+  times a normal summary. Truncation is never silent: the model sees a
+  "text truncated" marker and the user gets a note under the summary.
+- **Long summaries are split at paragraph/line boundaries** instead of at
+  character 4000, which could cut through an HTML tag and make Telegram
+  reject the chunk (degrading it to the plain-text fallback).
+- **Users no longer see raw exception text.** Errors meant for users are now
+  a `UserFacingError` with a Russian message; Anthropic SDK errors are mapped
+  to readable ones (overloaded, rate-limited, unreachable, timed out). Any
+  other exception is logged with its full traceback and the user gets a
+  generic message instead of English SDK/httpx internals.
+- URL validation accepts TLDs longer than 6 characters (`.technology`,
+  `.photography`) and punycode TLDs.
+
+### Fixed
+- **Truncated or refused answers were sent as if complete.** `summarize()`
+  ignored `stop_reason`: a reply cut off by `max_tokens` went out without
+  any hint, and a `refusal` surfaced as a confusing "no text block" error.
+  Both are now handled explicitly, as is a search loop still paused after
+  all continuations.
+- **Text written before a `pause_turn` was dropped.** A continuation only
+  returns the blocks generated after the pause, but the summary was built
+  from the last response alone (and only that response was re-sent as the
+  assistant turn). Blocks from every round are now accumulated.
+
 ## 2026-10-17 — Private bot, deadline-aware Claude calls, fail-closed auth
 
 ### Added

@@ -30,6 +30,11 @@ logger.setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 ANTHROPIC_CLIENT = anthropic.Anthropic(api_key=os.environ.get('ANTHROPIC_API_KEY', ''))
+
+# Overridable from the Lambda environment, so a newer model can be tried on
+# real articles without a deploy (and rolled back just as fast). The prompt
+# was tuned for claude-sonnet-5 — compare output before switching for good.
+CLAUDE_MODEL = os.environ.get('CLAUDE_MODEL', 'claude-sonnet-5')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
@@ -128,6 +133,22 @@ SUMMARIZE_PROMPT = """Выше — текст статьи, извлечённы
 # ARTICLE FETCHING
 # ═══════════════════════════════════════════════════════════════════════════
 
+class UserFacingError(Exception):
+    """
+    An error whose (Russian) message is safe and useful to show the user.
+
+    Anything else that reaches process_message is logged with its traceback
+    and the user only sees a generic message: raw exception text (SDK errors,
+    httpx internals) is English, noisy, and not meant for end users.
+    """
+
+
+# Longer articles are truncated before summarization. A runaway page (a docs
+# site, a huge comment thread) would otherwise go to Claude in full and cost
+# accordingly; for a summary, the first ~150k characters carry the substance.
+MAX_ARTICLE_CHARS = 150_000
+
+
 def fetch_article(url: str) -> str:
     """Fetch article text via Jina Reader."""
     jina_url = f"https://r.jina.ai/{url}"
@@ -141,17 +162,18 @@ def fetch_article(url: str) -> str:
         response.raise_for_status()
         return response.text
 
-    except httpx.TimeoutException:
-        raise Exception("Таймаут при загрузке статьи")
+    except httpx.TimeoutException as e:
+        raise UserFacingError("Таймаут при загрузке статьи") from e
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
-            raise Exception("Страница не найдена (404)")
+            raise UserFacingError("Страница не найдена (404)") from e
         elif e.response.status_code == 403:
-            raise Exception("Доступ запрещён (403)")
+            raise UserFacingError("Доступ запрещён (403)") from e
         else:
-            raise Exception(f"Ошибка HTTP: {e.response.status_code}")
-    except Exception as e:
-        raise Exception(f"Не удалось загрузить: {str(e)}")
+            raise UserFacingError(f"Ошибка HTTP: {e.response.status_code}") from e
+    except httpx.HTTPError as e:
+        logger.error(f"Article fetch failed: {url} - {e!r}")
+        raise UserFacingError("Не удалось загрузить статью") from e
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -161,6 +183,8 @@ def fetch_article(url: str) -> str:
 # Server-side web search, capped at 3 queries per article — enough to
 # fact-check a couple of key claims without risking a runaway search bill.
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
+
+CLAUDE_TIMEOUT_MESSAGE = "Не успел проанализировать статью — попробуй ещё раз"
 
 
 def summarize(text: str, deadline: float = None) -> str:
@@ -174,29 +198,41 @@ def summarize(text: str, deadline: float = None) -> str:
             would outlive the 240s Lambda timeout, and Lambda would kill the
             invocation instead of letting it report the failure.
     """
+    truncated = len(text) > MAX_ARTICLE_CHARS
+    if truncated:
+        logger.warning(f"Article truncated from {len(text)} to {MAX_ARTICLE_CHARS} chars")
+        text = text[:MAX_ARTICLE_CHARS] + "\n\n[…текст статьи обрезан…]"
+
     # Article first, instructions after (long-context best practice).
     # Concatenation instead of str.format() — articles routinely contain
     # literal { } (code snippets, JSON), which would crash .format().
     prompt = f"<article>\n{text}\n</article>\n\n{SUMMARIZE_PROMPT}"
-    messages = [{"role": "user", "content": prompt}]
 
     # The server-side search loop can pause after 10 rounds mid-turn
     # (stop_reason "pause_turn"); re-send the conversation to let it finish.
     # max_uses=3 makes hitting that ceiling unlikely, but this keeps a
-    # paused turn from silently truncating the summary.
+    # paused turn from silently truncating the summary. A continuation only
+    # returns the blocks generated after the pause, so every round's blocks
+    # are kept: both to resend as the assistant turn and to collect text
+    # written before the pause.
+    content = []
     for _ in range(3):
         client = ANTHROPIC_CLIENT
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining < 5:
-                raise Exception("Не успел проанализировать статью — попробуй ещё раз")
+                raise UserFacingError(CLAUDE_TIMEOUT_MESSAGE)
             # No SDK retries under a deadline: a retry after a timed-out
             # attempt would by definition run past the deadline.
             client = ANTHROPIC_CLIENT.with_options(timeout=remaining, max_retries=0)
 
+        messages = [{"role": "user", "content": prompt}]
+        if content:
+            messages.append({"role": "assistant", "content": list(content)})
+
         try:
             response = client.messages.create(
-                model="claude-sonnet-5",
+                model=CLAUDE_MODEL,
                 # claude-sonnet-5 runs adaptive thinking by default, and thinking
                 # tokens count against max_tokens. 2000 was barely enough for the
                 # answer alone — thinking (plus search results in context) could
@@ -205,23 +241,46 @@ def summarize(text: str, deadline: float = None) -> str:
                 tools=[WEB_SEARCH_TOOL],
                 messages=messages,
             )
-        except anthropic.APITimeoutError:
-            raise Exception("Не успел проанализировать статью — попробуй ещё раз")
+        # Most specific first: APITimeoutError is an APIConnectionError, and
+        # RateLimitError is an APIStatusError.
+        except anthropic.APITimeoutError as e:
+            raise UserFacingError(CLAUDE_TIMEOUT_MESSAGE) from e
+        except anthropic.APIConnectionError as e:
+            raise UserFacingError("Не удалось связаться с Claude — попробуй ещё раз") from e
+        except anthropic.RateLimitError as e:
+            raise UserFacingError("Слишком много запросов к Claude — попробуй через минуту") from e
+        except anthropic.APIStatusError as e:
+            if e.status_code >= 500:
+                raise UserFacingError("Claude сейчас перегружен — попробуй через пару минут") from e
+            raise
+
+        content.extend(response.content)
         if response.stop_reason != "pause_turn":
             break
-        messages = [
-            {"role": "user", "content": prompt},
-            {"role": "assistant", "content": response.content},
-        ]
+
+    if response.stop_reason == "refusal":
+        logger.warning(f"Claude refused: {getattr(response, 'stop_details', None)}")
+        raise UserFacingError("Claude отказался анализировать эту статью")
 
     # With web search, a response is several blocks: thinking, server-side
     # search calls/results, and one or more text segments interleaved
     # between searches. Concatenate every text block in order rather than
     # assuming the answer is a single block at a fixed position.
-    text_parts = [block.text for block in response.content if block.type == "text"]
+    text_parts = [block.text for block in content if block.type == "text"]
     if not text_parts:
-        raise Exception("Claude не вернул текстовый блок в ответе")
-    return "".join(text_parts)
+        raise UserFacingError("Claude вернул пустой ответ — попробуй ещё раз")
+    summary = "".join(text_parts)
+
+    # Never send a cut-off summary as if it were complete.
+    if response.stop_reason == "max_tokens":
+        logger.warning("Summary hit max_tokens and is truncated")
+        summary += "\n\n<i>⚠️ Ответ обрезан по лимиту длины.</i>"
+    elif response.stop_reason == "pause_turn":
+        logger.warning("Search loop still paused after all continuations")
+        summary += "\n\n<i>⚠️ Анализ мог остаться незавершённым.</i>"
+    if truncated:
+        summary += "\n\n<i>⚠️ Статья очень длинная — проанализирована только её первая часть.</i>"
+    return summary
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -297,12 +356,73 @@ def edit_message(chat_id: int, message_id: int, text: str, parse_mode: str = Non
 
 URL_PATTERN = re.compile(
     r'^https?://'
-    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'
+    # TLDs are up to 63 chars (.technology, .photography) or punycode (xn--…)
+    r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,63}|XN--[A-Z0-9-]{1,59})\.?|'
     r'localhost|'
     r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
     r'(?::\d+)?'
     r'(?:/?|[/?]\S+)$', re.IGNORECASE
 )
+
+
+def extract_url(message: dict) -> str | None:
+    """
+    Return the first link in a Telegram message, or None.
+
+    Uses Telegram's own entity parsing (`url` and `text_link`), so a link is
+    found inside ordinary text ("глянь https://…"), behind link text, and in
+    the caption of a forwarded post — not only when the whole message is a
+    bare URL. Entity offsets are in UTF-16 code units, hence the re-encoding.
+    """
+    text = message.get("text") or message.get("caption") or ""
+    entities = message.get("entities") or message.get("caption_entities") or []
+    utf16 = text.encode("utf-16-le")
+
+    for entity in entities:
+        if entity.get("type") == "text_link":
+            url = entity.get("url", "")
+        elif entity.get("type") == "url":
+            start = entity["offset"] * 2
+            url = utf16[start:start + entity["length"] * 2].decode("utf-16-le")
+        else:
+            continue
+        # Telegram also marks scheme-less links like "example.com/post"
+        if not re.match(r"https?://", url, re.IGNORECASE):
+            url = f"https://{url}"
+        if URL_PATTERN.match(url):
+            return url
+
+    # No entities (e.g. a hand-crafted test payload): accept a bare URL.
+    text = text.strip()
+    return text if URL_PATTERN.match(text) else None
+
+
+# A bit under Telegram's 4096-character message limit
+TELEGRAM_CHUNK_LIMIT = 4000
+
+
+def split_message(text: str, limit: int = TELEGRAM_CHUNK_LIMIT) -> list[str]:
+    """
+    Split text into Telegram-sized chunks at paragraph/line boundaries.
+
+    Cutting at an arbitrary character can land inside an HTML tag or between
+    <b> and </b>, and Telegram then rejects the whole chunk. The summary
+    format keeps every tag within one line, so line boundaries are safe; only
+    a single line longer than the limit gets a hard cut (and then relies on
+    the plain-text fallback in send_message/edit_message).
+    """
+    chunks = []
+    while len(text) > limit:
+        cut = text.rfind("\n\n", 0, limit)
+        if cut <= 0:
+            cut = text.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    chunks.append(text)
+    return [chunk for chunk in chunks if chunk.strip()]
+
 
 WELCOME_MESSAGE = """👋 Привет! Я создаю критические выжимки из статей.
 
@@ -366,25 +486,29 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None,
         # Summarize
         summary = summarize(article_text, deadline)
 
-        # Send the result
-        if len(summary) > 4000:
-            if status_msg_id:
-                edit_message(chat_id, status_msg_id, summary[:4000], parse_mode="HTML")
-            send_message(chat_id, summary[4000:], parse_mode="HTML")
+        # Send the result: the first chunk replaces the status message
+        chunks = split_message(summary)
+        if status_msg_id:
+            edit_message(chat_id, status_msg_id, chunks[0], parse_mode="HTML")
         else:
-            if status_msg_id:
-                edit_message(chat_id, status_msg_id, summary, parse_mode="HTML")
-            else:
-                send_message(chat_id, summary, parse_mode="HTML")
+            send_message(chat_id, chunks[0], parse_mode="HTML")
+        for chunk in chunks[1:]:
+            send_message(chat_id, chunk, parse_mode="HTML")
 
         logger.info(f"OK: {url[:50]}...")
+        return
 
-    except Exception as e:
+    except UserFacingError as e:
         logger.error(f"Error: {url} - {e}")
-        if status_msg_id:
-            edit_message(chat_id, status_msg_id, f"❌ {str(e)}")
-        else:
-            send_message(chat_id, f"❌ {str(e)}")
+        error_text = f"❌ {e}"
+    except Exception:
+        logger.exception(f"Unexpected error: {url}")
+        error_text = "❌ Что-то пошло не так. Попробуй ещё раз позже."
+
+    if status_msg_id:
+        edit_message(chat_id, status_msg_id, error_text)
+    else:
+        send_message(chat_id, error_text)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -449,7 +573,8 @@ def lambda_handler(event, context):
 
         message = body.get("message", {})
         chat_id = message.get("chat", {}).get("id")
-        text = message.get("text", "").strip()
+        # Forwarded posts carry their text in "caption" instead of "text"
+        text = (message.get("text") or message.get("caption") or "").strip()
 
         # Only IDs, never the raw event: it carries request headers (including
         # the webhook secret and the client IP) and the user's message text.
@@ -468,8 +593,9 @@ def lambda_handler(event, context):
             send_message(chat_id, WELCOME_MESSAGE, parse_mode="HTML")
             return {"statusCode": 200, "body": "ok"}
 
-        # Must be a URL
-        if not URL_PATTERN.match(text):
+        # Must contain a link
+        url = extract_url(message)
+        if not url:
             send_message(chat_id, "🔗 Отправь ссылку на статью для анализа")
             return {"statusCode": 200, "body": "ok"}
 
@@ -486,12 +612,12 @@ def lambda_handler(event, context):
             Payload=json.dumps({
                 "async_process": True,
                 "chat_id": chat_id,
-                "text": text,
+                "text": url,
                 "status_msg_id": status_msg_id
             })
         )
 
-        logger.info(f"Async invocation triggered for: {text[:50]}")
+        logger.info(f"Async invocation triggered for: {url[:50]}")
 
         # Return 200 RIGHT AWAY — Telegram won't retry
         return {"statusCode": 200, "body": json.dumps({"ok": True})}
