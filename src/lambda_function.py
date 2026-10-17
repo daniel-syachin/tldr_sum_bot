@@ -7,9 +7,11 @@ Solving the webhook timeout/retry problem:
 3. Telegram doesn't retry, because it already got a 200
 """
 
+import hmac
 import json
 import os
 import re
+import time
 import logging
 import boto3
 import httpx
@@ -33,11 +35,27 @@ TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # Verifies that webhook requests actually came from Telegram (via the
 # X-Telegram-Bot-Api-Secret-Token header) and not from someone who just found
-# the public API Gateway URL. If unset, the check is skipped — see
-# lambda_handler below.
+# the public API Gateway URL. Fail-closed: if unset, every webhook request is
+# rejected — a misconfigured env var must not silently open the endpoint.
 TELEGRAM_WEBHOOK_SECRET = os.environ.get('TELEGRAM_WEBHOOK_SECRET', '')
 if not TELEGRAM_WEBHOOK_SECRET:
-    logger.warning("TELEGRAM_WEBHOOK_SECRET is not set — webhook requests are not authenticated")
+    logger.error("TELEGRAM_WEBHOOK_SECRET is not set — all webhook requests will be rejected")
+
+# Comma-separated chat IDs allowed to use the bot. Every summary costs real
+# money (Claude + web search), so the bot is private by default: if this is
+# unset, nobody is allowed, and strangers are told their chat_id so the owner
+# can add themselves.
+ALLOWED_CHAT_IDS = {
+    int(chat_id) for chat_id in os.environ.get('ALLOWED_CHAT_IDS', '').split(',')
+    if chat_id.strip()
+}
+if not ALLOWED_CHAT_IDS:
+    logger.warning("ALLOWED_CHAT_IDS is not set — the bot will refuse every chat")
+
+# Time reserved at the end of the async invocation for telling the user that
+# something failed — without it, a Lambda timeout kills the process mid-call
+# and the status message stays stuck on "Анализирую..." forever.
+DEADLINE_MARGIN_SECONDS = 15
 
 # Lambda client used for async self-invocation
 LAMBDA_CLIENT = boto3.client('lambda')
@@ -145,8 +163,17 @@ def fetch_article(url: str) -> str:
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
 
 
-def summarize(text: str) -> str:
-    """Generate a summary via Claude, with capped web search for fact-checking."""
+def summarize(text: str, deadline: float = None) -> str:
+    """
+    Generate a summary via Claude, with capped web search for fact-checking.
+
+    Args:
+        text: article text
+        deadline: time.monotonic() value by which every Claude call must be
+            finished. Without it, the SDK defaults (10 min timeout, 2 retries)
+            would outlive the 240s Lambda timeout, and Lambda would kill the
+            invocation instead of letting it report the failure.
+    """
     # Article first, instructions after (long-context best practice).
     # Concatenation instead of str.format() — articles routinely contain
     # literal { } (code snippets, JSON), which would crash .format().
@@ -158,16 +185,28 @@ def summarize(text: str) -> str:
     # max_uses=3 makes hitting that ceiling unlikely, but this keeps a
     # paused turn from silently truncating the summary.
     for _ in range(3):
-        response = ANTHROPIC_CLIENT.messages.create(
-            model="claude-sonnet-5",
-            # claude-sonnet-5 runs adaptive thinking by default, and thinking
-            # tokens count against max_tokens. 2000 was barely enough for the
-            # answer alone — thinking (plus search results in context) could
-            # eat the whole budget and truncate the reply.
-            max_tokens=8000,
-            tools=[WEB_SEARCH_TOOL],
-            messages=messages,
-        )
+        client = ANTHROPIC_CLIENT
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining < 5:
+                raise Exception("Не успел проанализировать статью — попробуй ещё раз")
+            # No SDK retries under a deadline: a retry after a timed-out
+            # attempt would by definition run past the deadline.
+            client = ANTHROPIC_CLIENT.with_options(timeout=remaining, max_retries=0)
+
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-5",
+                # claude-sonnet-5 runs adaptive thinking by default, and thinking
+                # tokens count against max_tokens. 2000 was barely enough for the
+                # answer alone — thinking (plus search results in context) could
+                # eat the whole budget and truncate the reply.
+                max_tokens=8000,
+                tools=[WEB_SEARCH_TOOL],
+                messages=messages,
+            )
+        except anthropic.APITimeoutError:
+            raise Exception("Не успел проанализировать статью — попробуй ещё раз")
         if response.stop_reason != "pause_turn":
             break
         messages = [
@@ -279,7 +318,8 @@ WELCOME_MESSAGE = """👋 Привет! Я создаю критические �
 Отправь ссылку! 🔍"""
 
 
-def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
+def process_message(chat_id: int, text: str, status_msg_id: int = None,
+                    deadline: float = None) -> None:
     """
     Process a message (called asynchronously).
 
@@ -287,6 +327,8 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
         chat_id: chat ID
         text: message text (a URL)
         status_msg_id: ID of the already-sent status message, if any
+        deadline: time.monotonic() value by which summarization must finish
+            (see summarize); None means no limit (local development)
     """
 
     # Commands
@@ -322,7 +364,7 @@ def process_message(chat_id: int, text: str, status_msg_id: int = None) -> None:
             edit_message(chat_id, status_msg_id, "🔬 Анализирую...")
 
         # Summarize
-        summary = summarize(article_text)
+        summary = summarize(article_text, deadline)
 
         # Send the result
         if len(summary) > 4000:
@@ -377,21 +419,28 @@ def lambda_handler(event, context):
         text = event.get("text")
         status_msg_id = event.get("status_msg_id")
 
+        deadline = (time.monotonic()
+                    + context.get_remaining_time_in_millis() / 1000
+                    - DEADLINE_MARGIN_SECONDS)
+
         if chat_id and text:
-            process_message(chat_id, text, status_msg_id)
+            process_message(chat_id, text, status_msg_id, deadline)
 
         return {"statusCode": 200, "body": "processed"}
 
     # ─────────────────────────────────────────────────────────────────────
     # Webhook from Telegram (first invocation)
     # ─────────────────────────────────────────────────────────────────────
-    if TELEGRAM_WEBHOOK_SECRET:
-        headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
-        if headers.get("x-telegram-bot-api-secret-token") != TELEGRAM_WEBHOOK_SECRET:
-            logger.warning("Rejected webhook request with a missing/invalid secret token")
-            return {"statusCode": 401, "body": "unauthorized"}
+    if not TELEGRAM_WEBHOOK_SECRET:
+        return {"statusCode": 500, "body": "webhook secret not configured"}
 
-    logger.info(f"Webhook received: {json.dumps(event)[:300]}")
+    headers = {k.lower(): v for k, v in (event.get("headers") or {}).items()}
+    received_secret = headers.get("x-telegram-bot-api-secret-token") or ""
+    # Constant-time comparison, so response timing doesn't leak how much of
+    # a guessed secret was correct.
+    if not hmac.compare_digest(received_secret.encode(), TELEGRAM_WEBHOOK_SECRET.encode()):
+        logger.warning("Rejected webhook request with a missing/invalid secret token")
+        return {"statusCode": 401, "body": "unauthorized"}
 
     try:
         body = event.get("body", "{}")
@@ -402,8 +451,17 @@ def lambda_handler(event, context):
         chat_id = message.get("chat", {}).get("id")
         text = message.get("text", "").strip()
 
+        # Only IDs, never the raw event: it carries request headers (including
+        # the webhook secret and the client IP) and the user's message text.
+        logger.info(f"Webhook received: update_id={body.get('update_id')} chat_id={chat_id}")
+
         if not chat_id or not text:
             return {"statusCode": 200, "body": "no message"}
+
+        if chat_id not in ALLOWED_CHAT_IDS:
+            logger.info(f"Rejected message from chat_id={chat_id} (not in ALLOWED_CHAT_IDS)")
+            send_message(chat_id, f"🔒 Это приватный бот. Твой chat_id: {chat_id}")
+            return {"statusCode": 200, "body": "forbidden"}
 
         # Fast commands — handle immediately
         if text in ("/start", "/help"):

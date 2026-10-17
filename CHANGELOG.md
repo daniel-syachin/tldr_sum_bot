@@ -7,6 +7,39 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — Private bot, deadline-aware Claude calls, fail-closed auth
+
+### Added
+- **Chat allowlist (`ALLOWED_CHAT_IDS`).** The webhook secret proves a request
+  came from Telegram, not *who* is messaging the bot — anyone who found the bot
+  could run Claude + web search on the author's bill. Only listed chat IDs are
+  now served; anyone else gets a refusal containing their own `chat_id` (so the
+  owner can add themselves) before any paid API call. Unset means nobody is
+  allowed.
+
+### Changed
+- **Webhook secret check is now fail-closed.** An unset
+  `TELEGRAM_WEBHOOK_SECRET` used to skip authentication with only a warning —
+  one botched env-var edit would have silently opened the endpoint. It now
+  rejects every webhook request (`500`). The comparison uses
+  `hmac.compare_digest` instead of `!=`.
+- **Webhook logging no longer dumps the raw event.** It logged the first 300
+  characters of the API Gateway event, which includes request headers (client
+  IP, and potentially the webhook secret itself). Now it logs only `update_id`
+  and `chat_id`.
+
+### Fixed
+- **Slow Claude responses could outlive the Lambda and be re-run.** The SDK
+  defaults (10 min timeout, 2 retries) were far longer than the 240s Lambda
+  timeout, so a slow request ended in a hard Lambda timeout: the user's status
+  message stayed stuck, and Lambda's async retry policy could re-run the whole
+  summarization (and re-bill it) up to twice more. The async invocation now
+  derives a deadline from `context.get_remaining_time_in_millis()` (minus a
+  15s margin for reporting the error) and every Claude call is bounded by it,
+  without SDK retries. Paired with a one-off `MaximumRetryAttempts=0` on the
+  function's async invoke config (set via CLI — see CLAUDE.md), since
+  Terraform deliberately doesn't manage it.
+
 ## 2026-07-16 — Web search for fact-checking
 
 ### Added

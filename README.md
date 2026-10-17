@@ -68,7 +68,16 @@ flowchart LR
 - **The webhook itself is authenticated.** The API Gateway URL isn't secret, but the
   Lambda rejects (`401`) any webhook request that doesn't carry a matching
   `X-Telegram-Bot-Api-Secret-Token` header — so finding the URL alone isn't enough to
-  trigger the bot (and run up the Anthropic bill) on someone else's behalf.
+  trigger the bot (and run up the Anthropic bill) on someone else's behalf. Both
+  checks fail closed: an unset secret rejects every request instead of skipping
+  the check.
+- **The bot is private.** A valid webhook only proves the request came from
+  Telegram, not who sent the message — so only chats listed in `ALLOWED_CHAT_IDS`
+  get a summary; everyone else gets a one-line refusal before any paid API call.
+- **A slow request can't double-bill.** The async invocation passes its real
+  remaining Lambda time down to the Claude call, so a slow response surfaces as a
+  normal error message instead of a Lambda timeout — and async retries are
+  disabled, so a failure is never silently re-run from scratch.
 
 ## Repository layout
 

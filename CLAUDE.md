@@ -154,7 +154,8 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
 
 ## Secrets
 
-`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, and `TELEGRAM_WEBHOOK_SECRET` live
+`TELEGRAM_BOT_TOKEN`, `ANTHROPIC_API_KEY`, `TELEGRAM_WEBHOOK_SECRET`, and
+`ALLOWED_CHAT_IDS` live
 as plain environment variables on the Lambda function itself, set by hand
 (or via `aws lambda update-function-configuration`) — never in this repo,
 never in GitHub Secrets. `.env` is gitignored and only used for local
@@ -166,7 +167,33 @@ or interfere with that (`environment` is in `lifecycle.ignore_changes`).
 `TELEGRAM_WEBHOOK_SECRET` is checked against the
 `X-Telegram-Bot-Api-Secret-Token` header on every webhook call (see
 `lambda_handler` in `lambda_function.py`), so a request that isn't actually
-from Telegram gets a `401` instead of being processed. If this secret is ever
+from Telegram gets a `401` instead of being processed. The check is
+fail-closed: if the variable is unset, every webhook request gets a `500`.
+
+`ALLOWED_CHAT_IDS` is a comma-separated list of chat IDs the bot will serve
+(e.g. `123456789,987654321`). Unset means nobody — the bot replies to every
+chat with "private bot, your chat_id is N", which is also the easiest way to
+find your own ID. A malformed (non-integer) entry makes the module fail at
+import, i.e. the whole function errors until it's fixed — check CloudWatch
+right after editing it. `local_dev.py` doesn't apply the allowlist (it's a
+private dev bot).
+
+**Editing env vars from the CLI replaces the whole set.**
+`aws lambda update-function-configuration --environment "Variables={...}"`
+does not merge — any variable you leave out (e.g. the tokens) is deleted.
+Use the console, or read the current set first and pass all of it back.
+
+**Async retries are disabled by hand, not by Terraform.** The webhook
+self-invokes with `InvocationType='Event'`, and Lambda retries a failed async
+invocation up to twice by default — for this bot that means re-running (and
+re-billing) a whole summarization after a timeout. It's turned off once via:
+```
+aws lambda put-function-event-invoke-config --function-name telegram-summarizer-bot \
+  --region eu-central-1 --maximum-retry-attempts 0
+```
+It isn't in Terraform because managing it would need extra CI IAM permissions
+(see "Why Terraform's scope is narrow"). If the function is ever recreated,
+re-run this. If this secret is ever
 rotated, the webhook must be re-registered with the new value:
 `python scripts/set_webhook.py <webhook_url> <new_secret>` — otherwise
 Telegram keeps sending the old (now-mismatched) header and every real message
@@ -184,7 +211,10 @@ gets rejected.
   Telegram API level without affecting real users). Since the webhook secret
   check landed, a payload without the matching header now correctly gets
   `401` — include the header (read the real value from the Lambda console,
-  never print it in a shared terminal/log) to actually exercise the handler:
+  never print it in a shared terminal/log) to actually exercise the handler.
+  The fake `chat_id` below isn't in `ALLOWED_CHAT_IDS`, so this exercises
+  auth + the allowlist refusal path (look for `Rejected message from chat_id=1`
+  in the logs):
   ```
   aws lambda invoke --function-name telegram-summarizer-bot --region eu-central-1 \
     --cli-binary-format raw-in-base64-out \
