@@ -47,14 +47,26 @@ deploy only ships the few KB of actual bot code that changed.
 
 ```mermaid
 flowchart LR
-    Dev([Developer]) -->|git push main| GH[GitHub]
-    GH --> GA[GitHub Actions]
+    Dev([Developer]) -->|pull request| CI[CI: ruff, pytest,<br/>terraform fmt/validate/plan]
+    Dev -->|git push main| GH[GitHub]
+    GH --> Checks[Same CI checks]
+    Checks -->|pass| GA[Deploy job]
     GA -->|OIDC token| STS[AWS STS<br/>AssumeRoleWithWebIdentity]
     STS --> Role[IAM Role<br/>github-actions-tgbot]
     Role --> TF[terraform apply]
     TF -->|update code + config| Lambda[(Lambda Function)]
 ```
 
+- **Nothing reaches production unchecked.** Every pull request runs lint
+  (`ruff`), offline unit tests (`pytest`, every external API mocked) and
+  `terraform fmt`/`validate`/`plan`; the deploy workflow calls the very same
+  checks before `apply`, so a direct push to `main` can't skip them.
+- **One apply at a time.** The deploy job is serialized (`concurrency`) and the
+  Terraform state is locked with S3-native locking (`use_lockfile`), so two quick
+  pushes can't race each other into a corrupted state.
+- **Pinned supply chain.** Every third-party action is pinned to a commit SHA
+  (a moved tag can't swap the code that runs with AWS credentials), and
+  Dependabot proposes the bumps as reviewable PRs.
 - **No AWS keys in GitHub.** The workflow authenticates via OIDC — GitHub issues a
   short-lived signed token, AWS exchanges it for temporary credentials scoped to one IAM
   role. Nothing to leak, nothing to rotate.
@@ -68,7 +80,16 @@ flowchart LR
 - **The webhook itself is authenticated.** The API Gateway URL isn't secret, but the
   Lambda rejects (`401`) any webhook request that doesn't carry a matching
   `X-Telegram-Bot-Api-Secret-Token` header — so finding the URL alone isn't enough to
-  trigger the bot (and run up the Anthropic bill) on someone else's behalf.
+  trigger the bot (and run up the Anthropic bill) on someone else's behalf. Both
+  checks fail closed: an unset secret rejects every request instead of skipping
+  the check.
+- **The bot is private.** A valid webhook only proves the request came from
+  Telegram, not who sent the message — so only chats listed in `ALLOWED_CHAT_IDS`
+  get a summary; everyone else gets a one-line refusal before any paid API call.
+- **A slow request can't double-bill.** The async invocation passes its real
+  remaining Lambda time down to the Claude call, so a slow response surfaces as a
+  normal error message instead of a Lambda timeout — and async retries are
+  disabled, so a failure is never silently re-run from scratch.
 
 ## Repository layout
 
@@ -77,8 +98,10 @@ src/
   lambda_function.py   # the bot — this is what actually runs in production
   local_dev.py          # local long-polling runner for development, reuses the same code
 infra/                  # Terraform: manages Lambda function code/config only
-.github/workflows/      # CI: build a zip, assume an AWS role via OIDC, terraform apply
+.github/workflows/      # ci.yml: PR checks; deploy.yml: same checks, then OIDC + terraform apply
+tests/                  # offline unit tests (pytest), all external calls mocked
 requirements.txt         # full dependency set for local development
+requirements-dev.txt     # requirements.txt + pinned pytest/ruff
 requirements-lambda.txt  # documents what's actually bundled in the Lambda Layer
 scripts/set_webhook.py   # one-off script to (re)register the Telegram webhook
 ```
@@ -105,13 +128,15 @@ Edit `src/lambda_function.py` — same file, same functions, run locally or in L
 ## Deploying a change
 
 ```bash
-git add src/lambda_function.py
-git commit -m "Describe what changed and why"
-git push
+pip install -r requirements-dev.txt
+ruff check . && pytest          # the same checks CI runs
+git checkout -b my-change
+git commit -am "Describe what changed and why"
+git push -u origin my-change    # open a PR: CI checks + terraform plan
 ```
 
-That's it. GitHub Actions builds the package, authenticates to AWS, and runs
-`terraform apply` — the Lambda function is updated within about a minute. Watch it run
+Merging to `main` re-runs the checks, then builds the package, authenticates to
+AWS, and runs `terraform apply` — the Lambda function is updated within a few minutes. Watch it run
 under the [Actions tab](https://github.com/daniel-syachin/tldr_sum_bot/actions).
 
 > Adding a *new* third-party import needs one extra step: dependencies live in a Lambda

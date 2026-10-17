@@ -1,0 +1,5 @@
+# Local development + CI: runtime deps, plus lint/test tooling (pinned, so a
+# new ruff/pytest release can't turn CI red on an unrelated PR).
+-r requirements.txt
+pytest==9.1.1
+ruff==0.17.1

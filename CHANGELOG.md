@@ -7,6 +7,109 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — CI checks before every deploy, state locking, pinned actions
+
+### Added
+- **`ci.yml`: checks on every pull request** — `ruff`, the new offline
+  `pytest` suite (`tests/`, every external call mocked), and
+  `terraform fmt -check` / `validate`. Previously a push to `main` went
+  straight to `terraform apply -auto-approve` with nothing in between.
+- **`terraform plan` in the PR job summary**, via a *separate read-only*
+  role (`AWS_PLAN_ROLE_ARN` repository variable). A PR branch can edit the
+  workflow, so it must never be able to assume the deploy role. Skipped,
+  not failed, until that variable exists.
+- `.github/dependabot.yml` for monthly, grouped GitHub Actions bumps.
+
+### Changed
+- **`deploy.yml` runs the same checks first** (`workflow_call` into
+  `ci.yml`), so a direct push to `main` can't skip what a PR would catch.
+- **Deploys are serialized** with a `concurrency` group (queued, not
+  cancelled), and **the Terraform state is locked** with S3-native locking
+  (`use_lockfile = true`). Two quick pushes used to be able to run two
+  applies against the same unlocked state.
+- **Terraform 1.9.8 → 1.16.6** in CI (`required_version >= 1.11`, the
+  release where S3-native locking became GA).
+- **Every action is pinned to a commit SHA** (checkout v7.0.1, setup-python
+  v7.0.0, configure-aws-credentials v6.3.0, setup-terraform v4.0.1) instead
+  of a movable major tag — the deploy job runs with AWS credentials, so a
+  hijacked tag would run attacker code with them. The deploy also sets
+  `allowed-account-ids`, refusing credentials for any other account.
+- `.terraform.lock.hcl` gained the Linux `h1:` hashes for the existing
+  provider versions (it only had the hashes of the platform it was created on).
+
+## 2026-10-17 — Robust summaries: stop reasons, long articles, links, errors
+
+### Added
+- **Links are found anywhere in a message.** The bot used to require the
+  whole message to be a bare URL, so "глянь https://…", a link hidden behind
+  text, or a forwarded post (text in `caption`) were all rejected. It now
+  reads Telegram's own `url` / `text_link` entities (offsets are UTF-16, so
+  the text is re-encoded before slicing), including scheme-less links.
+- **`CLAUDE_MODEL` env var** (default `claude-sonnet-5`), so a newer model
+  can be tried on real articles from the Lambda console without a deploy —
+  and rolled back the same way. The prompt was tuned for `claude-sonnet-5`,
+  so a model switch deserves a side-by-side comparison, not a blind bump.
+
+### Changed
+- **Long articles are capped at 150k characters** before going to Claude, so
+  a runaway page (docs site, giant comment thread) can't silently cost many
+  times a normal summary. Truncation is never silent: the model sees a
+  "text truncated" marker and the user gets a note under the summary.
+- **Long summaries are split at paragraph/line boundaries** instead of at
+  character 4000, which could cut through an HTML tag and make Telegram
+  reject the chunk (degrading it to the plain-text fallback).
+- **Users no longer see raw exception text.** Errors meant for users are now
+  a `UserFacingError` with a Russian message; Anthropic SDK errors are mapped
+  to readable ones (overloaded, rate-limited, unreachable, timed out). Any
+  other exception is logged with its full traceback and the user gets a
+  generic message instead of English SDK/httpx internals.
+- URL validation accepts TLDs longer than 6 characters (`.technology`,
+  `.photography`) and punycode TLDs.
+
+### Fixed
+- **Truncated or refused answers were sent as if complete.** `summarize()`
+  ignored `stop_reason`: a reply cut off by `max_tokens` went out without
+  any hint, and a `refusal` surfaced as a confusing "no text block" error.
+  Both are now handled explicitly, as is a search loop still paused after
+  all continuations.
+- **Text written before a `pause_turn` was dropped.** A continuation only
+  returns the blocks generated after the pause, but the summary was built
+  from the last response alone (and only that response was re-sent as the
+  assistant turn). Blocks from every round are now accumulated.
+
+## 2026-10-17 — Private bot, deadline-aware Claude calls, fail-closed auth
+
+### Added
+- **Chat allowlist (`ALLOWED_CHAT_IDS`).** The webhook secret proves a request
+  came from Telegram, not *who* is messaging the bot — anyone who found the bot
+  could run Claude + web search on the author's bill. Only listed chat IDs are
+  now served; anyone else gets a refusal containing their own `chat_id` (so the
+  owner can add themselves) before any paid API call. Unset means nobody is
+  allowed.
+
+### Changed
+- **Webhook secret check is now fail-closed.** An unset
+  `TELEGRAM_WEBHOOK_SECRET` used to skip authentication with only a warning —
+  one botched env-var edit would have silently opened the endpoint. It now
+  rejects every webhook request (`500`). The comparison uses
+  `hmac.compare_digest` instead of `!=`.
+- **Webhook logging no longer dumps the raw event.** It logged the first 300
+  characters of the API Gateway event, which includes request headers (client
+  IP, and potentially the webhook secret itself). Now it logs only `update_id`
+  and `chat_id`.
+
+### Fixed
+- **Slow Claude responses could outlive the Lambda and be re-run.** The SDK
+  defaults (10 min timeout, 2 retries) were far longer than the 240s Lambda
+  timeout, so a slow request ended in a hard Lambda timeout: the user's status
+  message stayed stuck, and Lambda's async retry policy could re-run the whole
+  summarization (and re-bill it) up to twice more. The async invocation now
+  derives a deadline from `context.get_remaining_time_in_millis()` (minus a
+  15s margin for reporting the error) and every Claude call is bounded by it,
+  without SDK retries. Paired with a one-off `MaximumRetryAttempts=0` on the
+  function's async invoke config (set via CLI — see CLAUDE.md), since
+  Terraform deliberately doesn't manage it.
+
 ## 2026-07-16 — Web search for fact-checking
 
 ### Added

@@ -15,6 +15,7 @@ X-Telegram-Bot-Api-Secret-Token header, which lambda_function.py verifies.
 
 import os
 import sys
+
 import httpx
 from dotenv import load_dotenv
 

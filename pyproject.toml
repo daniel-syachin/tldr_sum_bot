@@ -1,0 +1,15 @@
+# Tool configuration only — this is not an installable package.
+
+[tool.ruff]
+target-version = "py314" # matches the Lambda runtime
+
+[tool.ruff.lint]
+# pyflakes + pycodestyle + bugbear + import order + pyupgrade: catches real
+# bugs and drift without forcing a style rewrite of the existing code.
+select = ["E", "F", "W", "B", "I", "UP"]
+# SUMMARIZE_PROMPT and the user-facing strings are long Russian lines by design
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
