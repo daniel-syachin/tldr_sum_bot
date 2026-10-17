@@ -25,12 +25,6 @@ resource "aws_lambda_function" "bot" {
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-  # Matches the function's current state in AWS — without this block Terraform
-  # tries to remove it on every plan (harmless, but noisy in the diff).
-  snap_start {
-    apply_on = "PublishedVersions"
-  }
-
   lifecycle {
     # Environment variables (tokens) are set by hand in the AWS console —
     # Terraform must never read/overwrite/clear them.

@@ -185,8 +185,10 @@ applying, and narrow the CI IAM policy to match exactly what's now needed).
   polling on a bot that already has a webhook registered (`409 Conflict`).
   Local development must use a separate bot (see the note in `.env.example`)
   — never point it at the production `TELEGRAM_BOT_TOKEN`.
-- **Windows Git Bash + `tr -d '\n'` leaves a stray `\r`.** Generating a secret
-  and piping it through `tr -d '\n'` on this platform strips the LF but not
+- **Windows only: Git Bash + `tr -d '\n'` leaves a stray `\r`.** (The project
+  is now developed on macOS, where this doesn't happen; kept because the
+  lesson applies to any secret handling.) Generating a secret
+  and piping it through `tr -d '\n'` on that platform strips the LF but not
   the CR, silently adding one invisible extra character. This caused a real
   webhook-secret mismatch once (Lambda had 65 chars, Telegram had 64). Prefer
   Python's `.strip()` (or `tr -d '\r\n'`) when handling secrets in shell
@@ -269,8 +271,8 @@ gets rejected.
 ## Debugging in production
 
 - Logs: `aws logs filter-log-events --log-group-name "/aws/lambda/telegram-summarizer-bot" --region eu-central-1 --start-time <epoch_ms>`
-  (on Windows Git Bash, prefix with `MSYS_NO_PATHCONV=1` or the leading `/` in
-  the log group name gets mangled into a Windows path).
+  (Windows Git Bash only: prefix with `MSYS_NO_PATHCONV=1`, or the leading `/`
+  in the log group name gets mangled into a Windows path. Not needed on macOS/Linux.)
 - Webhook status: `curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"`
   — an empty `"url"` means the webhook got cleared (e.g. after rotating the
   bot token) and needs re-registering with `scripts/set_webhook.py`.

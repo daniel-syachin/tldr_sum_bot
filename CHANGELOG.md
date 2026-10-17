@@ -7,6 +7,28 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 _Add new entries above this line as you make changes — see the "How to use this changelog" note at the bottom._
 
+## 2026-10-17 — Pin layer dependencies to what production runs, drop unused SnapStart
+
+### Changed
+- **`requirements-lambda.txt` pins `anthropic==0.77.0` and `httpx==0.28.1`**
+  — read from the published layer v1, not guessed. Before, the ranges
+  (`>=`) made CI install anthropic 1.x while production ran 0.77, so green
+  tests said nothing about the code that actually ships. The suite was run
+  against the pinned versions first (33 passed).
+- `CLAUDE.md`: Windows-only gotchas are marked as such (the project is now
+  developed on macOS; the Lambda itself always ran on Linux).
+
+### Removed
+- **`snap_start` block in `infra/main.tf`.** SnapStart only applies to
+  published versions, but API Gateway invokes the unqualified function
+  (`$LATEST`), so it was never used — and Python SnapStart adds restore
+  charges. Terraform will turn it off on the next apply.
+
+### Added
+- **`build-layer.yml`** (manual): builds the dependency layer zip in CI from
+  the pinned requirements and uploads it as an artifact. Replaces building it
+  on a laptop, so the layer no longer depends on the developer's OS.
+
 ## 2026-10-17 — CI checks before every deploy, state locking, pinned actions
 
 ### Added
