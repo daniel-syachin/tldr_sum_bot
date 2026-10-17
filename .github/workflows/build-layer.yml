@@ -1,0 +1,37 @@
+name: Build Lambda layer
+
+# Manual, on purpose: the layer changes rarely (only when a pin in
+# requirements-lambda.txt changes). It builds the zip the same way every time
+# and uploads it as a workflow artifact; publishing stays a deliberate manual
+# step (the deploy role has no layer permissions), see requirements-lambda.txt.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14" # same as the Lambda runtime
+
+      - name: Build layer
+        run: |
+          pip install -r requirements-lambda.txt -t layer/python \
+            --platform manylinux2014_x86_64 --implementation cp \
+            --python-version 3.14 --only-binary=:all:
+          cd layer && zip -qr ../layer.zip python
+
+      - name: Upload layer zip
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lambda-layer
+          path: layer.zip
+          if-no-files-found: error

@@ -9,12 +9,10 @@
 #     --zip-file fileb://../layer.zip --compatible-runtimes python3.14
 # then update infra/variables.tf: lambda_layer_arn (the new version's ARN).
 #
-# TODO: pin these to exact versions (==). As ranges, the next layer rebuild
-# silently pulls whatever is newest — possibly a new major version (anthropic
-# 1.x moved from httpx to httpx2) — and CI tests against a different version
-# than production runs. To see what layer version 1 actually contains:
-#   aws lambda get-layer-version --layer-name telegram-summarizer-bot-layer \
-#     --version-number 1 --region eu-central-1 --query Content.Location --output text
-#   (download that URL, then: unzip -l layer.zip | grep dist-info)
-httpx>=0.27.0
-anthropic>=0.40.0
+# Versions are pinned to exactly what layer v1 contains (verified from the
+# published layer: anthropic-0.77.0, httpx-0.28.1), so CI tests the same code
+# production runs. Bumping a pin means: change it here, rebuild the layer
+# (see the workflow "Build Lambda layer"), publish it, update
+# infra/variables.tf, and let CI run the tests against the new versions first.
+httpx==0.28.1
+anthropic==0.77.0
